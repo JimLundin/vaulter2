@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vaulter</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --line: #262b35;
+        --text: #e6e8ec;
+        --muted: #8b93a1;
+        --accent: #6ea8fe;
+        --rec: #ff5d5d;
+        --ok: #5fd08a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+      header .sub { color: var(--muted); font-size: 13px; }
+      main { flex: 1; overflow-y: auto; padding: 20px; }
+      #feed { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+      }
+      .card .transcript { font-weight: 500; }
+      .card .agent { color: var(--muted); white-space: pre-wrap; margin-top: 8px; font-size: 14px; }
+      .card .tools { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+      .tool { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+      .tool b { color: var(--accent); font-weight: 600; }
+      .card .summary { margin-top: 10px; color: var(--text); }
+      .card .summary .ok { color: var(--ok); }
+      .card .commit { color: var(--muted); font: 12px ui-monospace, monospace; margin-left: 6px; }
+      .card.err { border-color: var(--rec); }
+      .card .err-msg { color: var(--rec); margin-top: 8px; }
+      .spinner { color: var(--muted); font-size: 13px; margin-top: 8px; }
+      footer {
+        border-top: 1px solid var(--line);
+        padding: 16px 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
+      #record {
+        border: none;
+        border-radius: 999px;
+        padding: 14px 28px;
+        font-size: 15px;
+        font-weight: 600;
+        color: #fff;
+        background: var(--accent);
+        cursor: pointer;
+        transition: background .15s, transform .05s;
+      }
+      #record:active { transform: scale(.98); }
+      #record.recording { background: var(--rec); }
+      #record:disabled { opacity: .5; cursor: default; }
+      #interim { color: var(--muted); min-height: 20px; font-size: 14px; text-align: center; }
+      .fallback { max-width: 760px; width: 100%; display: flex; gap: 8px; }
+      .fallback textarea {
+        flex: 1; background: var(--panel); color: var(--text);
+        border: 1px solid var(--line); border-radius: 8px; padding: 10px; resize: vertical;
+        font: inherit; min-height: 44px;
+      }
+      .fallback button {
+        background: var(--accent); color: #fff; border: none; border-radius: 8px;
+        padding: 0 18px; font-weight: 600; cursor: pointer;
+      }
+      .notice { color: var(--muted); font-size: 13px; max-width: 760px; text-align: center; }
+      .empty { color: var(--muted); text-align: center; margin-top: 40px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Vaulter</h1>
+      <span class="sub">speak a thought — the Librarian files it</span>
+    </header>
+
+    <main>
+      <div id="feed"><div class="empty">Nothing captured yet. Press record and speak.</div></div>
+    </main>
+
+    <footer id="footer">
+      <!-- populated by script: either a record button or a typed fallback -->
+    </footer>
+
+    <script>
+      const feed = document.getElementById("feed");
+      const footer = document.getElementById("footer");
+      const cards = new Map(); // capture id -> { el, agentEl, toolsEl }
+
+      // --- Feed rendering (driven by SSE) ---
+      function cardFor(id) {
+        let c = cards.get(id);
+        if (c) return c;
+        document.querySelector(".empty")?.remove();
+        const el = document.createElement("div");
+        el.className = "card";
+        const transcript = document.createElement("div");
+        transcript.className = "transcript";
+        const tools = document.createElement("div");
+        tools.className = "tools";
+        const agent = document.createElement("div");
+        agent.className = "agent";
+        const spinner = document.createElement("div");
+        spinner.className = "spinner";
+        spinner.textContent = "Librarian is filing…";
+        el.append(transcript, tools, agent, spinner);
+        feed.append(el);
+        c = { el, transcriptEl: transcript, agentEl: agent, toolsEl: tools, spinnerEl: spinner };
+        cards.set(id, c);
+        return c;
+      }
+
+      function scroll() {
+        document.querySelector("main").scrollTop = document.querySelector("main").scrollHeight;
+      }
+
+      const es = new EventSource("/events");
+      es.onmessage = (e) => {
+        const ev = JSON.parse(e.data);
+        const c = cardFor(ev.id);
+        if (ev.type === "capture") {
+          c.transcriptEl.textContent = ev.transcript;
+        } else if (ev.type === "text") {
+          c.agentEl.textContent += ev.text;
+        } else if (ev.type === "tool") {
+          const line = document.createElement("div");
+          line.className = "tool";
+          line.innerHTML = "<b>" + ev.tool + "</b>" + (ev.target ? " " + escapeHtml(ev.target) : "");
+          c.toolsEl.append(line);
+        } else if (ev.type === "done") {
+          c.spinnerEl.remove();
+          c.agentEl.remove();
+          const s = document.createElement("div");
+          s.className = "summary";
+          s.innerHTML = '<span class="ok">✓</span> ' + escapeHtml(ev.summary || "Filed.");
+          if (ev.commit) {
+            const com = document.createElement("span");
+            com.className = "commit";
+            com.textContent = ev.commit;
+            s.append(com);
+          }
+          c.el.append(s);
+        } else if (ev.type === "error") {
+          c.spinnerEl?.remove();
+          c.el.classList.add("err");
+          const m = document.createElement("div");
+          m.className = "err-msg";
+          m.textContent = "Failed: " + ev.message;
+          c.el.append(m);
+        }
+        scroll();
+      };
+
+      function escapeHtml(s) {
+        return s.replace(/[&<>"']/g, (ch) => (
+          { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+        ));
+      }
+
+      async function sendCapture(transcript) {
+        transcript = (transcript || "").trim();
+        if (!transcript) return;
+        await fetch("/capture", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript }),
+        });
+      }
+
+      // --- Input: Web Speech API, with a typed fallback when unsupported ---
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      if (SR) {
+        const btn = document.createElement("button");
+        btn.id = "record";
+        btn.textContent = "● Record";
+        const interim = document.createElement("div");
+        interim.id = "interim";
+        footer.append(btn, interim);
+
+        const rec = new SR();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = navigator.language || "en-US";
+
+        let recording = false;
+        let finalText = "";
+
+        btn.onclick = () => {
+          if (!recording) {
+            finalText = "";
+            interim.textContent = "";
+            rec.start();
+          } else {
+            rec.stop();
+          }
+        };
+
+        rec.onstart = () => {
+          recording = true;
+          btn.classList.add("recording");
+          btn.textContent = "■ Stop";
+        };
+
+        rec.onresult = (e) => {
+          let live = "";
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            const r = e.results[i];
+            if (r.isFinal) finalText += r[0].transcript;
+            else live += r[0].transcript;
+          }
+          interim.textContent = (finalText + " " + live).trim();
+        };
+
+        rec.onerror = (e) => {
+          interim.textContent = e.error === "no-speech" ? "Didn't catch that — try again." : "Mic error: " + e.error;
+        };
+
+        rec.onend = () => {
+          recording = false;
+          btn.classList.remove("recording");
+          btn.textContent = "● Record";
+          const text = finalText.trim();
+          interim.textContent = "";
+          if (text) sendCapture(text);
+        };
+      } else {
+        const note = document.createElement("div");
+        note.className = "notice";
+        note.textContent =
+          "Voice capture needs the Web Speech API (Chrome or Edge). Your browser doesn't support it — type your capture instead:";
+        const wrap = document.createElement("div");
+        wrap.className = "fallback";
+        const ta = document.createElement("textarea");
+        ta.placeholder = "Type a thought to file…";
+        const send = document.createElement("button");
+        send.textContent = "File";
+        const submit = () => { sendCapture(ta.value); ta.value = ""; };
+        send.onclick = submit;
+        ta.addEventListener("keydown", (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
+        });
+        wrap.append(ta, send);
+        footer.append(note, wrap);
+      }
+    </script>
+  </body>
+</html>

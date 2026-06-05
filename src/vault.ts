@@ -13,8 +13,8 @@ async function git(vault: string, ...args: string[]): Promise<string> {
 
 /**
  * Ensure the vault directory exists and is a git repo. On a cold start (the
- * directory is missing or empty) we seed a tiny skeleton so the Librarian has
- * a structure to conform to instead of an empty void, then make the first
+ * directory is missing or empty) we seed a tiny skeleton so Vaulter has a
+ * structure to conform to instead of an empty void, then make the first
  * commit. Returns true if we seeded.
  */
 export async function ensureVault(vault: string): Promise<boolean> {
@@ -31,8 +31,8 @@ export async function ensureVault(vault: string): Promise<boolean> {
   if (!isRepo) {
     await git(vault, "init", "-q");
     // Local identity so commits work even if the user has no global git config.
-    await git(vault, "config", "user.name", "Vaulter Librarian");
-    await git(vault, "config", "user.email", "librarian@vaulter.local");
+    await git(vault, "config", "user.name", "Vaulter");
+    await git(vault, "config", "user.email", "vaulter@vaulter.local");
   }
 
   if (seeding) {
@@ -55,7 +55,7 @@ async function seedSkeleton(vault: string): Promise<void> {
     [
       "# Vault",
       "",
-      "A knowledge vault of plain Markdown notes, filed by the Vaulter Librarian.",
+      "A knowledge vault of plain Markdown notes, filed by Vaulter.",
       "Open this folder in Obsidian to browse and edit. Every Capture is committed",
       "to git, so any change is diffable and revertible.",
       "",
@@ -76,8 +76,8 @@ async function seedSkeleton(vault: string): Promise<void> {
   );
 }
 
-/** Stage everything and commit. Returns the new commit hash, or null if the
- * Librarian changed nothing. */
+/** Stage everything and commit. Returns the new commit hash, or null if
+ * Vaulter changed nothing. */
 export async function commitAll(
   vault: string,
   message: string,

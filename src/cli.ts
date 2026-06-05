@@ -8,7 +8,7 @@ async function main() {
   const arg = process.argv[2];
   if (!arg || arg === "-h" || arg === "--help") {
     console.log("Usage: vaulter <vault-folder>\n");
-    console.log("  Speak a thought; a local Librarian agent files it into your");
+    console.log("  Speak a thought; a local Vaulter agent files it into your");
     console.log("  Markdown vault. The vault is created (and seeded) if missing.");
     process.exit(arg ? 0 : 1);
   }

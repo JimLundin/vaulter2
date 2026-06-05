@@ -1,7 +1,7 @@
 import http from "node:http";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { runLibrarian, type LibrarianEvent } from "./librarian.js";
+import { runAgent, type AgentEvent } from "./agent.js";
 import { commitAll } from "./vault.js";
 
 /** A feed event broadcast to every connected browser over SSE. */
@@ -22,7 +22,7 @@ export function createRuntime(vault: string) {
     for (const res of clients) res.write(frame);
   }
 
-  // --- Serialized capture queue: one Librarian run at a time. ---
+  // --- Serialized capture queue: one Vaulter run at a time. ---
   const queue: { id: number; transcript: string }[] = [];
   let nextId = 1;
   let running = false;
@@ -35,13 +35,13 @@ export function createRuntime(vault: string) {
       while ((job = queue.shift())) {
         broadcast({ type: "capture", id: job.id, transcript: job.transcript });
         try {
-          const onEvent = (e: LibrarianEvent) =>
+          const onEvent = (e: AgentEvent) =>
             broadcast(
               e.kind === "text"
                 ? { type: "text", id: job!.id, text: e.text }
                 : { type: "tool", id: job!.id, tool: e.tool, target: e.target },
             );
-          const { summary } = await runLibrarian(vault, job.transcript, onEvent);
+          const { summary } = await runAgent(vault, job.transcript, onEvent);
           const commit = await commitAll(
             vault,
             `vaulter: ${summary || "capture"}`.slice(0, 72),

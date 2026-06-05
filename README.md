@@ -1,6 +1,6 @@
 # Vaulter
 
-Speak a thought; a local **Librarian** agent files it into your Markdown vault.
+Speak a thought; a local **Vaulter** agent files it into your Markdown vault.
 
 Vaulter is local-first: your notes are plain Markdown files you own (open them in
 Obsidian), git is the undo system, and the model runs on your own Claude
@@ -24,8 +24,10 @@ node dist/cli.js ~/my-vault     # or: npx vaulter ~/my-vault
 ```
 
 This boots a local Runtime on `http://localhost:4317` and opens your browser.
-Press **Record**, speak, press **Stop** — the transcript is transcribed in the
-browser and sent to the Librarian, which reads your vault, conforms to its
+Press **Record** and speak. The transcript is produced in the browser and
+streamed to Vaulter in chunks at a regular interval (and once more when you
+press **Stop**) — so it starts filing while you're still talking. Each chunk is
+queued and handled one at a time: Vaulter reads your vault, conforms to its
 structure, files the note, and commits to git. The feed shows what it did.
 
 The vault folder is created and seeded with a tiny skeleton on first run.
@@ -40,7 +42,7 @@ The vault folder is created and seeded with a tiny skeleton on first run.
 - **`src/cli.ts`** — entry: resolves the vault, ensures/seeds it, starts the Runtime.
 - **`src/runtime.ts`** — local HTTP server: serves the SPA, an SSE feed, and a
   `/capture` endpoint; serializes captures one at a time.
-- **`src/librarian.ts`** — wraps the Claude Agent SDK `query()`; the conform-to-vault
+- **`src/agent.ts`** — wraps the Claude Agent SDK `query()`; the conform-to-vault
   system prompt and event streaming live here.
 - **`src/vault.ts`** — first-run seeding and the one-commit-per-capture git logic.
 - **`public/index.html`** — the SPA (voice capture + scrolling feed), no build step.

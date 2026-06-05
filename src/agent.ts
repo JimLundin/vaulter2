@@ -1,11 +1,13 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-/** A live event from one Librarian run, streamed to the browser feed. */
-export type LibrarianEvent =
+/** A live event from one Vaulter run, streamed to the browser feed. */
+export type AgentEvent =
   | { kind: "text"; text: string }
   | { kind: "tool"; tool: string; target: string };
 
-const SYSTEM_PROMPT = `You are the Librarian of a personal knowledge Vault: a directory of plain Markdown notes that the owner browses and edits in Obsidian. You are given one Capture — a short transcript of something the owner just said aloud — and your job is to file it into the Vault.
+const SYSTEM_PROMPT = `You are Vaulter, the agent that tends a personal knowledge Vault: a directory of plain Markdown notes that the owner browses and edits in Obsidian. You are given one Capture — a short transcript of something the owner just said aloud — and your job is to file it into the Vault.
+
+Captures stream in while the owner is still speaking, so a Capture may be only a fragment of a larger thought, or a continuation of the one just before it. Before filing, check the most recently modified notes (especially today's daily note): if this Capture continues something you just wrote, extend that note rather than starting a new one.
 
 You have no preset organizing rulebook. Before you write anything, look at what is already there: list the directory, read a few existing notes, and learn the Vault's own structure, naming conventions, and linking style (e.g. wikilinks, frontmatter, folders, tags). Then act in a way that conforms to it.
 
@@ -18,13 +20,13 @@ export interface RunResult {
 }
 
 /**
- * Run the Librarian over one Capture. Streams text + tool-use events via
- * `onEvent`; resolves with the agent's final summary line once it finishes.
+ * Run Vaulter over one Capture. Streams text + tool-use events via `onEvent`;
+ * resolves with the agent's final summary line once it finishes.
  */
-export async function runLibrarian(
+export async function runAgent(
   vault: string,
   transcript: string,
-  onEvent: (e: LibrarianEvent) => void,
+  onEvent: (e: AgentEvent) => void,
   abort?: AbortController,
 ): Promise<RunResult> {
   // Force the subscription credentials: the on-disk OAuth login from `claude`
@@ -70,7 +72,7 @@ export async function runLibrarian(
       if (message.subtype === "success" && message.result.trim()) {
         summary = message.result.trim();
       } else if (message.subtype !== "success") {
-        throw new Error(`Librarian run failed: ${message.subtype}`);
+        throw new Error(`Vaulter run failed: ${message.subtype}`);
       }
     }
   }

@@ -93,7 +93,7 @@
   <body>
     <header>
       <h1>Vaulter</h1>
-      <span class="sub">speak a thought — the Librarian files it</span>
+      <span class="sub">speak — Vaulter files it as you go</span>
     </header>
 
     <main>
@@ -124,7 +124,7 @@
         agent.className = "agent";
         const spinner = document.createElement("div");
         spinner.className = "spinner";
-        spinner.textContent = "Librarian is filing…";
+        spinner.textContent = "Vaulter is filing…";
         el.append(transcript, tools, agent, spinner);
         feed.append(el);
         c = { el, transcriptEl: transcript, agentEl: agent, toolsEl: tools, spinnerEl: spinner };
@@ -205,21 +205,34 @@
         rec.interimResults = true;
         rec.lang = navigator.language || "en-US";
 
-        let recording = false;
-        let finalText = "";
+        const FLUSH_MS = 6000; // how often finalized speech is streamed to Vaulter
+        let recording = false; // the user's intent to be recording
+        let pendingFinal = ""; // finalized transcript not yet sent
+        let flushTimer = null;
+
+        // Send whatever speech has finalized since the last flush as one Capture.
+        function flush() {
+          const chunk = pendingFinal.trim();
+          if (!chunk) return;
+          pendingFinal = "";
+          interim.textContent = "";
+          sendCapture(chunk);
+        }
 
         btn.onclick = () => {
           if (!recording) {
-            finalText = "";
+            recording = true;
+            pendingFinal = "";
             interim.textContent = "";
             rec.start();
+            flushTimer = setInterval(flush, FLUSH_MS);
           } else {
-            rec.stop();
+            recording = false;
+            rec.stop(); // onend flushes the remainder and clears the timer
           }
         };
 
         rec.onstart = () => {
-          recording = true;
           btn.classList.add("recording");
           btn.textContent = "■ Stop";
         };
@@ -228,23 +241,28 @@
           let live = "";
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const r = e.results[i];
-            if (r.isFinal) finalText += r[0].transcript;
+            if (r.isFinal) pendingFinal += r[0].transcript;
             else live += r[0].transcript;
           }
-          interim.textContent = (finalText + " " + live).trim();
+          interim.textContent = (pendingFinal + " " + live).trim();
         };
 
         rec.onerror = (e) => {
-          interim.textContent = e.error === "no-speech" ? "Didn't catch that — try again." : "Mic error: " + e.error;
+          if (e.error !== "no-speech") interim.textContent = "Mic error: " + e.error;
         };
 
         rec.onend = () => {
-          recording = false;
+          if (recording) {
+            // The browser ended the session (silence/timeout) but the user is
+            // still recording — restart so streaming continues uninterrupted.
+            try { rec.start(); } catch (_) {}
+            return;
+          }
+          // Stopped by the user: flush the tail and reset the button.
+          if (flushTimer) { clearInterval(flushTimer); flushTimer = null; }
+          flush();
           btn.classList.remove("recording");
           btn.textContent = "● Record";
-          const text = finalText.trim();
-          interim.textContent = "";
-          if (text) sendCapture(text);
         };
       } else {
         const note = document.createElement("div");

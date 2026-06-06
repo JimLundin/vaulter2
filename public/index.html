@@ -242,12 +242,20 @@
         rec.interimResults = true;
         rec.lang = "en-US"; // transcribe in English
 
-        const FLUSH_MS = 6000; // how often finalized speech is streamed to Vaulter
+        const GAP_MS = 1500; // flush after this much silence — i.e. on a pause
         let recording = false; // the user's intent to be recording
         let pendingFinal = ""; // finalized transcript not yet sent
-        let flushTimer = null;
+        let gapTimer = null;
 
-        // Send whatever speech has finalized since the last flush as one Capture.
+        // Flush on a pause: re-armed on every speech result, so it only fires
+        // once the speaker has gone quiet for GAP_MS — chunking on thought
+        // boundaries instead of chopping mid-sentence on a fixed clock.
+        function armGap() {
+          clearTimeout(gapTimer);
+          gapTimer = setTimeout(flush, GAP_MS);
+        }
+
+        // Send the finalized speech accumulated so far as one Capture.
         function flush() {
           const chunk = pendingFinal.trim();
           if (!chunk) return;
@@ -258,6 +266,7 @@
 
         // On stop: send the tail and close the recording's session.
         function flushFinal() {
+          clearTimeout(gapTimer);
           const chunk = pendingFinal.trim();
           pendingFinal = "";
           interim.textContent = "";
@@ -272,7 +281,6 @@
             pendingFinal = "";
             interim.textContent = "";
             rec.start();
-            flushTimer = setInterval(flush, FLUSH_MS);
           } else {
             recording = false;
             rec.stop(); // onend flushes the remainder and clears the timer
@@ -292,6 +300,7 @@
             else live += r[0].transcript;
           }
           interim.textContent = (pendingFinal + " " + live).trim();
+          armGap(); // (re)start the silence countdown; flush only on a real pause
         };
 
         rec.onerror = (e) => {
@@ -306,7 +315,6 @@
             return;
           }
           // Stopped by the user: flush the tail, close the session, reset.
-          if (flushTimer) { clearInterval(flushTimer); flushTimer = null; }
           flushFinal();
           btn.classList.remove("recording");
           btn.textContent = "● Record";

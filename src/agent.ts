@@ -1,8 +1,9 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
-/** The model Vaulter files captures with. Sonnet keeps latency low while still
- * organizing/linking well; change here (or via setModel) to trade speed vs depth. */
-export const MODEL = "claude-sonnet-4-6";
+/** The model Vaulter files captures with. Haiku is the fastest tier, to keep
+ * filing latency near real-time; change here (or via setModel) to trade speed
+ * for depth (e.g. "claude-sonnet-4-6"). */
+export const MODEL = "claude-haiku-4-5";
 
 /** A live event from the current turn, streamed to the browser feed. */
 export type AgentEvent =

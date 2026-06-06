@@ -8,7 +8,7 @@ import {
   type AgentEvent,
   type Session,
 } from "./agent.js";
-import { commitAll } from "./vault.js";
+import { commitAll, pushToRemote } from "./vault.js";
 
 /** A feed event broadcast to every connected browser over SSE. */
 type FeedEvent =
@@ -18,7 +18,14 @@ type FeedEvent =
   | { type: "start"; id: number }
   | { type: "text"; id: number; text: string }
   | { type: "tool"; id: number; tool: string; target: string }
-  | { type: "done"; id: number; summary: string; commit: string | null }
+  | {
+      type: "done";
+      id: number;
+      summary: string;
+      commit: string | null;
+      sync: "synced" | "local" | "failed";
+      syncDetail?: string;
+    }
   | { type: "error"; id: number; message: string };
 
 const INDEX_HTML = fileURLToPath(new URL("../public/index.html", import.meta.url));
@@ -85,7 +92,18 @@ export function createRuntime(vault: string) {
           vault,
           `vaulter: ${summary || "capture"}`.slice(0, 72),
         );
-        broadcast({ type: "done", id, summary, commit });
+        // Transactional sync: push each commit so the remote mirrors local.
+        let sync: "synced" | "local" | "failed" = "local";
+        let syncDetail: string | undefined;
+        if (commit) {
+          const r = await pushToRemote(vault);
+          if (r.status === "pushed") sync = "synced";
+          else if (r.status === "failed") {
+            sync = "failed";
+            syncDetail = r.detail;
+          }
+        }
+        broadcast({ type: "done", id, summary, commit, sync, syncDetail });
         busy = false;
         processingId = null;
         pump();

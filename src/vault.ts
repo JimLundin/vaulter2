@@ -35,12 +35,55 @@ export async function ensureVault(vault: string): Promise<boolean> {
     await git(vault, "config", "user.email", "vaulter@vaulter.local");
   }
 
+  // If VAULTER_REMOTE is set and there's no `origin` yet, wire it up so commits
+  // can be pushed for off-machine backup / sync.
+  const remoteUrl = process.env.VAULTER_REMOTE;
+  if (remoteUrl && !(await hasRemote(vault))) {
+    await git(vault, "remote", "add", "origin", remoteUrl);
+  }
+
   if (seeding) {
     await seedSkeleton(vault);
     await commitAll(vault, "vaulter: seed vault");
   }
 
   return seeding;
+}
+
+/** True if the vault repo has an `origin` remote to push to. */
+export async function hasRemote(vault: string): Promise<boolean> {
+  const remotes = await git(vault, "remote").catch(() => "");
+  return remotes.split("\n").includes("origin");
+}
+
+export type PushResult =
+  | { status: "pushed" }
+  | { status: "no-remote" }
+  | { status: "failed"; detail: string };
+
+/**
+ * Push the current branch to `origin`. Best-effort and bounded by a timeout so
+ * an offline/hung remote can't freeze the capture queue. A single `git push`
+ * carries every unpushed commit, so a later success transparently catches up
+ * anything an earlier failure left behind.
+ */
+export async function pushToRemote(vault: string): Promise<PushResult> {
+  if (!(await hasRemote(vault))) return { status: "no-remote" };
+  try {
+    await exec("git", ["push", "origin", "HEAD"], { cwd: vault, timeout: 20_000 });
+    return { status: "pushed" };
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    const lines = (e.stderr || e.message || "")
+      .toString()
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    // Prefer git's root-cause line (the first fatal:/error:) over its trailing advice.
+    const detail =
+      lines.find((l) => /^(fatal|error):/i.test(l)) || lines[0] || "push failed";
+    return { status: "failed", detail };
+  }
 }
 
 /** Lay down a minimal starting structure: an inbox, a daily note, a README. */

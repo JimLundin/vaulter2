@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { exec } from "node:child_process";
-import { ensureVault } from "./vault.js";
+import { ensureVault, hasRemote, pushToRemote } from "./vault.js";
 import { createRuntime } from "./runtime.js";
 
 async function main() {
@@ -16,6 +16,18 @@ async function main() {
   const vault = path.resolve(arg);
   const seeded = await ensureVault(vault);
   console.log(`Vault: ${vault}${seeded ? " (seeded a starting skeleton)" : ""}`);
+
+  // Remote sync: report status and bring the remote up to date on launch.
+  if (await hasRemote(vault)) {
+    const r = await pushToRemote(vault);
+    if (r.status === "pushed") console.log("Remote: origin (synced — every capture is pushed)");
+    else if (r.status === "failed") console.log(`Remote: origin (push failed: ${r.detail})`);
+  } else {
+    console.log(
+      "Remote: none — commits stay local. Add one to sync:\n" +
+        `  git -C "${vault}" remote add origin <url>   (or set VAULTER_REMOTE)`,
+    );
+  }
 
   const port = Number(process.env.VAULTER_PORT ?? 4317);
   const server = createRuntime(vault);

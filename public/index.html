@@ -62,6 +62,9 @@
       .card .summary { margin-top: 10px; color: var(--text); }
       .card .summary .ok { color: var(--ok); }
       .card .commit { color: var(--muted); font: 12px ui-monospace, monospace; margin-left: 6px; }
+      .card .sync { font: 12px ui-monospace, monospace; margin-left: 8px; }
+      .card .sync.synced { color: var(--ok); }
+      .card .sync.failed { color: var(--rec); }
       .card.err { border-color: var(--rec); }
       .card .err-msg { color: var(--rec); margin-top: 8px; }
       .spinner { color: var(--muted); font-size: 13px; margin-top: 8px; }
@@ -191,6 +194,14 @@
             com.className = "commit";
             com.textContent = ev.commit;
             s.append(com);
+          }
+          // Sync indicator — only shown when a remote is configured.
+          if (ev.sync === "synced" || ev.sync === "failed") {
+            const sy = document.createElement("span");
+            sy.className = "sync " + ev.sync;
+            sy.textContent = ev.sync === "synced" ? "↑ synced" : "⚠ not pushed";
+            if (ev.syncDetail) sy.title = ev.syncDetail;
+            s.append(sy);
           }
           c.el.append(s);
         } else if (ev.type === "error") {

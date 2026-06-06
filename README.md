@@ -32,10 +32,27 @@ structure, files the note, and commits to git. The feed shows what it did.
 
 The vault folder is created and seeded with a tiny skeleton on first run.
 
+### Remote sync (optional)
+
+If the vault repo has an `origin` remote, Vaulter pushes after every commit, so
+the remote mirrors your vault capture-by-capture (git as transactional backup).
+The local commit always lands first; if a push fails (offline, etc.) the feed
+shows `⚠ not pushed` and the next successful push carries the backlog. Set it up
+either way:
+
+```bash
+git -C ~/my-vault remote add origin <url>     # existing vault
+VAULTER_REMOTE=<url> npx vaulter ~/new-vault   # wire it up on first run
+```
+
+The remote must accept non-interactive pushes (SSH key or a cached credential
+helper); Vaulter runs `git push` with your normal git credentials.
+
 ### Options
 
 - `VAULTER_PORT` — port (default `4317`)
 - `VAULTER_NO_OPEN` — set to skip auto-opening the browser
+- `VAULTER_REMOTE` — git URL to use as `origin` if the vault has no remote yet
 
 ## How it fits together
 

@@ -1,12 +1,19 @@
 import http from "node:http";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { startSession, MODEL, type AgentEvent, type Session } from "./agent.js";
+import {
+  startSession,
+  MODEL,
+  DISCOVERY_PRIMER,
+  type AgentEvent,
+  type Session,
+} from "./agent.js";
 import { commitAll } from "./vault.js";
 
 /** A feed event broadcast to every connected browser over SSE. */
 type FeedEvent =
-  | { type: "info"; model: string }
+  | { type: "info"; model: string; ready: boolean }
+  | { type: "ready" }
   | { type: "queued"; id: number; transcript: string }
   | { type: "start"; id: number }
   | { type: "text"; id: number; text: string }
@@ -24,40 +31,40 @@ export function createRuntime(vault: string) {
     for (const res of clients) res.write(frame);
   }
 
-  // --- One recording = one Vaulter Session (shared context across chunks). ---
-  // Captures queue here and are fed to the agent ONE turn at a time: we only
-  // release the next turn after the previous one is committed, so the Runtime's
+  // One long-lived Vaulter session for the whole server: the Vault is discovered
+  // once (a warm-up turn primed at launch), then every Capture reuses that
+  // context. Captures queue here and are fed to the agent ONE turn at a time;
+  // the next turn is released only after the previous one is committed, so the
   // git commit never races the agent's edits.
-  const pending: { id: number; transcript: string }[] = [];
+  const pending: { id: number; transcript: string; newRecording: boolean }[] = [];
   let nextId = 1;
   let session: Session | null = null;
-  let recordingId: string | null = null;
-  let processingId: number | null = null; // chunk currently being filed
-  let busy = false; // a turn is in flight (sent, not yet committed)
-  let ending = false; // recording stopped; end the session once drained
+  let ready = false; // discovery warm-up finished
+  let busy = false; // a turn is in flight
+  let processingId: number | null = null; // chunk being filed; null = warm-up
+  let lastRecordingId: string | null = null;
 
   function pump(): void {
-    if (busy) return;
+    if (busy || !session) return;
     const head = pending.shift();
-    if (!head) {
-      if (ending && session) {
-        session.end();
-        session = null;
-        recordingId = null;
-        ending = false;
-      }
-      return;
-    }
+    if (!head) return;
     busy = true;
     processingId = head.id;
     broadcast({ type: "start", id: head.id });
-    session!.send(head.transcript);
+    // A fresh recording may be an unrelated topic; tell the agent so it doesn't
+    // blindly extend the previous recording's notes.
+    const message = head.newRecording
+      ? `(New recording — this may be a new, unrelated topic; judge from the content whether it continues earlier notes or starts something new.)\n\n${head.transcript}`
+      : head.transcript;
+    session.send(message);
   }
 
-  function openSession(): void {
+  function ensureSession(): void {
+    if (session) return;
+    ready = false;
     session = startSession(vault, {
       onEvent: (e: AgentEvent) => {
-        if (processingId == null) return;
+        if (processingId == null) return; // warm-up turn: nothing to show
         broadcast(
           e.kind === "text"
             ? { type: "text", id: processingId, text: e.text }
@@ -65,7 +72,15 @@ export function createRuntime(vault: string) {
         );
       },
       onTurnComplete: async (summary: string) => {
-        const id = processingId!;
+        if (processingId == null) {
+          // Warm-up finished: ready for real captures (don't commit orientation).
+          ready = true;
+          broadcast({ type: "ready" });
+          busy = false;
+          pump();
+          return;
+        }
+        const id = processingId;
         const commit = await commitAll(
           vault,
           `vaulter: ${summary || "capture"}`.slice(0, 72),
@@ -75,32 +90,43 @@ export function createRuntime(vault: string) {
         processingId = null;
         pump();
       },
-      onError: (message: string) => {
-        if (processingId != null) broadcast({ type: "error", id: processingId, message });
+      onTurnError: (message: string) => {
+        if (processingId == null) {
+          // Warm-up failed — proceed anyway; captures will discover as needed.
+          ready = true;
+          broadcast({ type: "ready" });
+        } else {
+          broadcast({ type: "error", id: processingId, message });
+        }
         busy = false;
         processingId = null;
         pump();
       },
+      onFatal: (message: string) => {
+        if (processingId != null) broadcast({ type: "error", id: processingId, message });
+        // Drop the dead session; the NEXT capture reopens it (lazy, so a
+        // persistently failing warm-up can't spin-loop spawning processes).
+        session = null;
+        ready = false;
+        busy = false;
+        processingId = null;
+      },
     });
+    // Pay discovery up front, at launch, instead of on the first chunk.
+    busy = true;
+    processingId = null;
+    session.send(DISCOVERY_PRIMER);
   }
 
-  function capture(rid: string, transcript: string, final: boolean): void {
-    // A new recording id means a fresh thought: end the old session, start one.
-    if (!session || rid !== recordingId) {
-      if (session) session.end();
-      pending.length = 0;
-      busy = false;
-      ending = false;
-      processingId = null;
-      recordingId = rid;
-      openSession();
-    }
+  function capture(rid: string, transcript: string): void {
+    ensureSession();
     if (transcript) {
+      const newRecording = rid !== lastRecordingId;
+      lastRecordingId = rid;
       const id = nextId++;
-      pending.push({ id, transcript });
+      pending.push({ id, transcript, newRecording });
       broadcast({ type: "queued", id, transcript });
     }
-    if (final) ending = true;
     pump();
   }
 
@@ -125,7 +151,7 @@ export function createRuntime(vault: string) {
         Connection: "keep-alive",
       });
       res.write(": connected\n\n");
-      res.write(`data: ${JSON.stringify({ type: "info", model: MODEL })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "info", model: MODEL, ready })}\n\n`);
       clients.add(res);
       req.on("close", () => clients.delete(res));
       return;
@@ -140,21 +166,19 @@ export function createRuntime(vault: string) {
       req.on("end", () => {
         let rid = "";
         let transcript = "";
-        let final = false;
         try {
           const j = JSON.parse(body);
           rid = (j.recordingId ?? "").toString();
           transcript = (j.transcript ?? "").toString().trim();
-          final = !!j.final;
         } catch {
           /* fall through to 400 */
         }
-        if (!rid || (!transcript && !final)) {
+        if (!rid) {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "need recordingId and transcript or final" }));
+          res.end(JSON.stringify({ error: "need recordingId" }));
           return;
         }
-        capture(rid, transcript, final);
+        capture(rid, transcript);
         res.writeHead(202, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ queued: pending.length }));
       });
@@ -163,6 +187,10 @@ export function createRuntime(vault: string) {
 
     res.writeHead(404).end("not found");
   });
+
+  // Warm the session as soon as the runtime is created, so discovery is done
+  // (or nearly) by the time the user records their first Capture.
+  ensureSession();
 
   return server;
 }

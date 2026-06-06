@@ -12,30 +12,47 @@ export type AgentEvent =
 export interface SessionCallbacks {
   /** Text/tool activity during the turn currently being filed. */
   onEvent: (e: AgentEvent) => void;
-  /** A turn finished; `summary` is its feed line. Awaited before the next turn
+  /** A turn succeeded; `summary` is its feed line. Awaited before the next turn
    * is released, so the Runtime can commit without racing the agent. */
   onTurnComplete: (summary: string) => Promise<void> | void;
-  /** The turn failed. */
-  onError: (message: string) => void;
+  /** A single turn failed, but the session is still usable for later turns. */
+  onTurnError: (message: string) => void;
+  /** The session ended/threw and is no longer usable; it must be reopened. */
+  onFatal: (message: string) => void;
 }
 
-/** A live Vaulter session spanning one recording: many captures, one context. */
+/** A long-lived Vaulter session: many captures, one shared context (so the Vault
+ * is discovered once, not re-explored per chunk). */
 export interface Session {
-  /** Feed one capture in as a turn. Call only when the previous turn is done. */
-  send(transcript: string): void;
-  /** Close the input; the underlying query ends once the last turn drains. */
+  /** Feed one message in as a turn. Call only when the previous turn is done. */
+  send(message: string): void;
+  /** Close the input; the underlying query ends once work drains. */
   end(): void;
 }
 
-const SYSTEM_PROMPT = `You are Vaulter, the agent that tends a personal knowledge Vault: a directory of plain Markdown notes that the owner browses and edits in Obsidian. The owner speaks; each message you receive is a Capture — a chunk of transcript — and your job is to file it into the Vault.
+const SYSTEM_PROMPT = `You are Vaulter. The owner speaks; each message you receive is a Capture — a chunk of transcript — and your job is to weave it into a personal **wiki**: a web of densely interlinked atomic Markdown notes (Obsidian-style). It is NOT a journal and NOT a pile of daily logs.
 
-The Vault is your current working directory — it IS the folder you're already in, so use relative paths (or ".") and never go hunting for it elsewhere on disk.
+The Vault is your current working directory — use relative paths and never hunt for it elsewhere on disk.
 
-You stay in ONE session for the whole recording, so the Captures arrive as a sequence and you keep full memory of earlier turns. On the FIRST turn, look at what's already there: list the current directory, read a few existing notes, and learn the Vault's structure, naming, and linking style (wikilinks, frontmatter, folders, tags). On LATER turns do NOT re-explore from scratch — you already know the layout and what you just wrote. A later Capture is usually a continuation of the thought you just filed, so extend the same note rather than starting a new one; only read a note again when you need its current contents to edit it.
+How the wiki must be built:
+- **Atomic notes.** Each note is about ONE thing — a concept, person, project, place, decision, term. Title it by that thing ("Mitochondria.md", "Japan Trip.md"), never by date. Keep notes focused: split a note that has drifted into two topics; merge duplicates.
+- **Link densely.** Whenever a Capture mentions something that deserves its own note, link it with [[wikilinks]]. If that note doesn't exist yet, create it (even a one-line stub) and link to it — a good wiki is mostly links. Add "See also" / backlinks between related notes so the graph stays connected.
+- **Maps of Content.** Maintain hub/index notes (a Home note, and topic MOCs) that link out to the notes beneath them, so there is always a navigable path from the top down to any note. When you add a note, link it from the appropriate hub.
+- **The daily note is only a log.** If one exists, put just short timestamped lines there that LINK to the real topical notes (e.g. "Captured thoughts on [[Japan Trip]]"). Never let knowledge live only in the daily note.
+- **Inbox is a last resort** — only when you genuinely cannot tell where something belongs.
 
-File each Capture wherever fits best: create a new note, append to or edit an existing one, move/rename, or split/merge so related material lives together. Prefer integrating into existing notes over dumping into the inbox; use the inbox only when nothing else fits. Use the owner's conventions for filenames and links. Keep the writing clean and faithful — fix obvious transcription noise, but do not invent facts.
+For each Capture:
+1. Identify the concepts/entities/topics it contains.
+2. For each, find or create its note and add the new material there, cleanly written.
+3. Wire up the links — between those notes, to related existing notes, and from the relevant hub/MOC.
 
-Work autonomously and decisively; there is no human to ask. Do NOT run any git commands — the Runtime commits after each turn. End each turn with one short sentence (a feed line) describing what you did, e.g. "Extended [[Japan trip]] with a draft itinerary."`;
+You stay in ONE session across a recording, so you keep full memory of earlier turns. A later Capture is usually a continuation of what you just filed — extend those notes rather than starting over — unless a message tells you a new recording began, in which case judge from its content. Do NOT re-explore the Vault from scratch each turn; you already know its layout.
+
+Write cleanly and faithfully — fix obvious transcription noise, never invent facts. Work autonomously; there is no human to ask. Do NOT run git — the Runtime commits after each turn. End each turn with one short feed-line summary, e.g. "Created [[Shinkansen]] and linked it from [[Japan Trip]] and [[Home]]."`;
+
+/** Sent once when a session opens, before any Capture, so discovery is paid up
+ * front (at server launch) instead of on the first real chunk. */
+export const DISCOVERY_PRIMER = `You are starting up — no Captures have arrived yet. Orient yourself now so you're ready: list the directory tree, read the Home/index note and a sampling of existing notes, and build a mental model of the Vault's structure, naming, folders, tags, and how notes link. This is READ-ONLY: do not create or modify any files yet. Reply with a one-line summary of what the Vault currently contains.`;
 
 /**
  * Open a Vaulter session over the Vault. Built-in tools (Read/Write/Edit/Bash/
@@ -90,18 +107,18 @@ export function startSession(vault: string, cb: SessionCallbacks): Session {
           if (message.subtype === "success") {
             await cb.onTurnComplete((message.result || summary).trim());
           } else {
-            cb.onError(message.subtype);
+            cb.onTurnError(message.subtype);
           }
           summary = "";
         }
       }
     } catch (err) {
-      cb.onError(err instanceof Error ? err.message : String(err));
+      cb.onFatal(err instanceof Error ? err.message : String(err));
     }
   })();
 
   return {
-    send: (transcript: string) => stream.push(transcript),
+    send: (message: string) => stream.push(message),
     end: () => stream.end(),
   };
 }

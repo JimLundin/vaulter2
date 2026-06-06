@@ -17,7 +17,7 @@ A segment of speech and the transcript it produces — the unit of input Vaulter
 _Avoid_: recording, memo, input
 
 **Vaulter**:
-The agent that reads the Vault and reorganizes it in response to a Capture — creating, editing, moving, merging, and splitting Notes. The intelligence lives in the model, not in app code. (The app is named after it.)
+The agent that reads the Vault and reorganizes it in response to a Capture — creating, editing, moving, merging, and splitting Notes. It builds a **wiki**: atomic, densely interlinked notes (one topic each) with Maps of Content, not a journal. The intelligence lives in the model, not in app code. (The app is named after it.)
 _Avoid_: Librarian, assistant, bot, AI
 
 **Runtime**:
@@ -32,7 +32,7 @@ _Avoid_: server, backend, daemon
 - The model layer is the Agent SDK, **not** the Vercel AI SDK and **not** a raw API key (both ruled out: only the Agent SDK / `claude -p` runtime can spend the subscription credit).
 - A **pure-browser, subscription-paid** app was investigated exhaustively and is **impossible**, on four independent grounds: the browser same-origin model (a page cannot ride claude.ai's session from another origin), no public OAuth client registration for third-party web apps, no CORS-enabled subscription-token API endpoint, and the Feb-2026 ToS ban (server-side enforced) on subscription OAuth in third-party apps. The subscription's only programmatic surface is the local Agent SDK / `claude -p` runtime.
 - Architecture is therefore: a **browser UI** (capture + feed) served by, and talking to, a **local Runtime** that holds the credentials, runs the Agent SDK, and owns the Vault + git.
-- Each Capture is **fire-and-forget**: autonomous, no clarifying conversation. The UI is a scrolling feed of results, not a chat. A whole recording is **one Vaulter session** (a single Agent SDK `query()` fed the chunks as a stream), so Vaulter keeps the Vault in context across the recording and does **not** re-discover it on every chunk — later chunks extend what earlier ones filed. A new recording starts a fresh session.
+- Each Capture is **fire-and-forget**: autonomous, no clarifying conversation. The UI is a scrolling feed of results, not a chat. The whole server runs **one persistent Vaulter session** (a single Agent SDK `query()` fed every chunk as a stream), **primed with a read-only discovery turn at launch** so the Vault is learned once — no chunk pays the discovery cost. Later chunks extend what earlier ones filed; a new recording is flagged so Vaulter can tell a new topic from a continuation.
 - Vaulter has **no preset organizing rulebook**; it **observes the existing Vault and conforms** to its structure, naming, and linking before acting. On first run it seeds a tiny starting skeleton so the cold-start Vault isn't empty.
 - A Capture's transcript is **streamed to Vaulter at a regular interval while recording** (and flushed once more when recording stops) — no review/edit step. Vaulter starts filing before the speaker is finished.
 - Within a session the chunks are **serialized**: fed to Vaulter one turn at a time, and the Runtime releases the next turn only after committing the previous one — so the per-chunk **git commit** never races the agent's edits. Concurrent runs over the Vault/git are disallowed.

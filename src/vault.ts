@@ -50,25 +50,42 @@ async function seedSkeleton(vault: string): Promise<void> {
   await fs.mkdir(path.join(vault, "inbox"), { recursive: true });
   await fs.mkdir(path.join(vault, "daily"), { recursive: true });
 
+  // Home is the Map of Content — the entry point Vaulter links every topic from.
+  // Seeding it (rather than a bare daily note) steers Vaulter toward a wiki.
   await fs.writeFile(
-    path.join(vault, "README.md"),
+    path.join(vault, "Home.md"),
     [
-      "# Vault",
+      "# Home",
       "",
-      "A knowledge vault of plain Markdown notes, filed by Vaulter.",
-      "Open this folder in Obsidian to browse and edit. Every Capture is committed",
-      "to git, so any change is diffable and revertible.",
+      "Map of content for this Vault — the entry point that links out to every topic.",
+      "As the Vault grows, topical notes are linked from here (or from a more",
+      "specific hub note).",
       "",
-      "- `inbox/` — notes that haven't found a permanent home yet",
-      "- `daily/` — one note per day, `YYYY-MM-DD.md`",
+      "## Topics",
+      "",
+      "_(none yet — start capturing)_",
       "",
     ].join("\n"),
   );
 
   await fs.writeFile(
-    path.join(vault, "inbox", ".gitkeep"),
-    "",
+    path.join(vault, "README.md"),
+    [
+      "# Vault",
+      "",
+      "A personal wiki of plain Markdown notes, filed by Vaulter. Knowledge lives",
+      "in atomic, densely interlinked topical notes — not in the daily log.",
+      "Open this folder in Obsidian to browse and edit. Every Capture is committed",
+      "to git, so any change is diffable and revertible.",
+      "",
+      "- `Home.md` — the map of content; the entry point into the wiki",
+      "- `inbox/` — captures that haven't found a permanent home yet",
+      "- `daily/` — a dated log; short lines that link out to the topical notes",
+      "",
+    ].join("\n"),
   );
+
+  await fs.writeFile(path.join(vault, "inbox", ".gitkeep"), "");
 
   await fs.writeFile(
     path.join(vault, "daily", `${today}.md`),

@@ -42,7 +42,9 @@ The vault folder is created and seeded with a tiny skeleton on first run.
 - **`src/cli.ts`** — entry: resolves the vault, ensures/seeds it, starts the Runtime.
 - **`src/runtime.ts`** — local HTTP server: serves the SPA, an SSE feed, and a
   `/capture` endpoint; serializes captures one at a time.
-- **`src/agent.ts`** — wraps the Claude Agent SDK `query()`; the conform-to-vault
-  system prompt and event streaming live here.
+- **`src/agent.ts`** — one Claude Agent SDK `query()` per recording, fed the
+  chunks as a streaming input so the model keeps the vault in context (no
+  re-discovery per chunk). The conform-to-vault system prompt, the model
+  (`claude-sonnet-4-6`), and event streaming live here.
 - **`src/vault.ts`** — first-run seeding and the one-commit-per-capture git logic.
 - **`public/index.html`** — the SPA (voice capture + scrolling feed), no build step.

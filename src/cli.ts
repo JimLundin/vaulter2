@@ -38,7 +38,10 @@ async function main() {
   });
 
   const shutdown = () => {
+    // Destroy keep-alive SSE sockets so close() can finish; hard-exit as backstop.
+    server.closeAllConnections?.();
     server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 500).unref();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

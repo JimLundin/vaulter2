@@ -222,8 +222,11 @@
         ));
       }
 
-      // One recording = one recordingId; the runtime ties chunks into one
-      // Vaulter session. `final: true` closes the session when recording stops.
+      // One recording = one recordingId. There is a SINGLE Vaulter session for
+      // the whole server (not per recording); the recordingId only lets the
+      // runtime flag when a NEW recording starts, so the agent can tell a fresh
+      // topic from a continuation. `final` marks the last chunk of a recording
+      // for the UI's own flushing — the runtime does not act on it.
       let recordingId = null;
 
       async function sendCapture(transcript, final) {
@@ -233,7 +236,7 @@
         await fetch("/capture", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ recordingId, transcript, final: !!final }),
+          body: JSON.stringify({ recordingId, transcript }),
         });
       }
 
@@ -254,6 +257,11 @@
         rec.lang = "en-US"; // transcribe in English
 
         const GAP_MS = 1500; // flush after this much silence — i.e. on a pause
+        const MIN_CHUNK_CHARS = 60; // coalesce sub-thought fragments: a pause
+        // that leaves less than this much buffered text does NOT flush — the
+        // fragment stays buffered and merges with the next pause's speech, so a
+        // choppy talker doesn't spray tiny one-fragment Captures (each of which
+        // would be its own agent turn and its own git commit).
         let recording = false; // the user's intent to be recording
         let pendingFinal = ""; // finalized transcript not yet sent
         let gapTimer = null;
@@ -266,10 +274,14 @@
           gapTimer = setTimeout(flush, GAP_MS);
         }
 
-        // Send the finalized speech accumulated so far as one Capture.
+        // Send the finalized speech accumulated so far as one Capture — but only
+        // once it's grown to a thought-sized chunk. A shorter fragment stays in
+        // pendingFinal (interim keeps showing it) and coalesces with the next
+        // pause. flushFinal (on Stop) always sends the remainder, however small,
+        // so nothing is ever lost.
         function flush() {
           const chunk = pendingFinal.trim();
-          if (!chunk) return;
+          if (chunk.length < MIN_CHUNK_CHARS) return;
           pendingFinal = "";
           interim.textContent = "";
           sendCapture(chunk, false);

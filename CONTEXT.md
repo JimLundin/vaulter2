@@ -13,7 +13,7 @@ A single Markdown file inside the Vault.
 _Avoid_: document, entry, page
 
 **Capture**:
-A segment of speech and the transcript it produces — the unit of input Vaulter acts on. While recording, the transcript is flushed to the Runtime in chunks at a regular interval (and once more when recording stops), so a Capture is typically a chunk of a longer thought rather than a whole utterance. Transcription happens **in the browser** via the Web Speech API, so the Runtime receives text, never audio.
+A segment of speech and the transcript it produces — the unit of input Vaulter acts on. While recording, the transcript is flushed to the Runtime on a **speech pause** (and once more when recording stops), with sub-thought fragments coalesced into the next chunk — so a Capture is a thought-sized chunk of a longer train of thought rather than a whole utterance or every sentence. Transcription happens **in the browser** via the Web Speech API, so the Runtime receives text, never audio.
 _Avoid_: recording, memo, input
 
 **Vaulter**:
@@ -34,5 +34,5 @@ _Avoid_: server, backend, daemon
 - Architecture is therefore: a **browser UI** (capture + feed) served by, and talking to, a **local Runtime** that holds the credentials, runs the Agent SDK, and owns the Vault + git.
 - Each Capture is **fire-and-forget**: autonomous, no clarifying conversation. The UI is a scrolling feed of results, not a chat. The whole server runs **one persistent Vaulter session** (a single Agent SDK `query()` fed every chunk as a stream), **primed with a read-only discovery turn at launch** so the Vault is learned once — no chunk pays the discovery cost. Later chunks extend what earlier ones filed; a new recording is flagged so Vaulter can tell a new topic from a continuation.
 - Vaulter has **no preset organizing rulebook**; it **observes the existing Vault and conforms** to its structure, naming, and linking before acting. On first run it seeds a tiny starting skeleton so the cold-start Vault isn't empty.
-- A Capture's transcript is **streamed to Vaulter at a regular interval while recording** (and flushed once more when recording stops) — no review/edit step. Vaulter starts filing before the speaker is finished.
+- A Capture's transcript is **streamed to Vaulter on a speech pause while recording** (and flushed once more when recording stops) — no review/edit step. Filing begins as soon as you pause, so for ordinary (pausing) speech Vaulter starts filing before you've finished the recording.
 - Within a session the chunks are **serialized**: fed to Vaulter one turn at a time, and the Runtime releases the next turn only after committing the previous one — so the per-chunk **git commit** never races the agent's edits. Concurrent runs over the Vault/git are disallowed.

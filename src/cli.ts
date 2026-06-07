@@ -1,19 +1,34 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { realpathSync } from "node:fs";
 import { exec } from "node:child_process";
 import { ensureVault, hasRemote, pushToRemote } from "./vault.js";
 import { createRuntime } from "./runtime.js";
 
 async function main() {
-  const arg = process.argv[2];
-  if (!arg || arg === "-h" || arg === "--help") {
-    console.log("Usage: vaulter <vault-folder>\n");
-    console.log("  Speak a thought; a local Vaulter agent files it into your");
-    console.log("  Markdown vault. The vault is created (and seeded) if missing.");
-    process.exit(arg ? 0 : 1);
+  // The vault folder comes from the first CLI argument, or VAULTER_VAULT as a
+  // fallback (used by `npm run dev`, and handy for a fixed personal vault).
+  const flag = process.argv[2];
+  if (flag === "-h" || flag === "--help") {
+    printUsage();
+    process.exit(0);
+  }
+  const arg = flag ?? process.env.VAULTER_VAULT;
+  if (!arg) {
+    printUsage();
+    console.log("\n  No vault given. Pass a folder, or set VAULTER_VAULT.");
+    process.exit(1);
   }
 
-  const vault = path.resolve(arg);
+  // Resolve through symlinks so the logged path (and git) point at the real
+  // vault, not a convenience link like .dev-vault → ~/my-vault. realpath throws
+  // for a not-yet-created vault; fall back to the plain resolved path then.
+  let vault = path.resolve(arg);
+  try {
+    vault = realpathSync(vault);
+  } catch {
+    /* vault doesn't exist yet — ensureVault creates it below */
+  }
   const seeded = await ensureVault(vault);
   console.log(`Vault: ${vault}${seeded ? " (seeded a starting skeleton)" : ""}`);
 
@@ -57,6 +72,12 @@ async function main() {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+function printUsage(): void {
+  console.log("Usage: vaulter <vault-folder>   (or set VAULTER_VAULT)\n");
+  console.log("  Speak a thought; a local Vaulter agent files it into your");
+  console.log("  Markdown vault. The vault is created (and seeded) if missing.");
 }
 
 /** Best-effort open the default browser; silent on failure (e.g. headless). */

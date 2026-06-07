@@ -19,7 +19,7 @@ design and [`docs/adr/`](docs/adr) for why it's built this way.
 
 ```bash
 npm install
-npm run build
+npm run build                   # bundles the UI (Vite) and compiles the Runtime
 node dist/cli.js ~/my-vault     # or: npx vaulter ~/my-vault
 ```
 
@@ -51,6 +51,7 @@ helper); Vaulter runs `git push` with your normal git credentials.
 
 ### Options
 
+- `VAULTER_VAULT` — vault folder to use when no path is given on the command line
 - `VAULTER_PORT` — port (default `4317`)
 - `VAULTER_NO_OPEN` — set to skip auto-opening the browser
 - `VAULTER_REMOTE` — git URL to use as `origin` if the vault has no remote yet
@@ -66,4 +67,16 @@ helper); Vaulter runs `git push` with your normal git credentials.
   recording). The conform-to-vault system prompt, the model (`claude-haiku-4-5`),
   and event streaming live here.
 - **`src/vault.ts`** — first-run seeding and the one-commit-per-capture git logic.
-- **`public/index.html`** — the SPA (voice capture + scrolling feed), no build step.
+- **`web/`** — the browser UI (React + Vite + Tailwind): a scrolling log of your
+  spoken text and what Vaulter does with it, with a compact recorder (mic + live
+  waveform) docked at the bottom. Vite bundles it into `public/`, which the
+  Runtime serves as static files.
+
+### Developing the UI
+
+```bash
+npm run dev        # Vite (HMR) on :5173 proxying the API to the Runtime on :4317
+```
+
+Open `http://localhost:5173` for hot-reloading; `npm run build` regenerates the
+bundle the Runtime serves in production.

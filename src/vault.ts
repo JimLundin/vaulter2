@@ -42,12 +42,33 @@ export async function ensureVault(vault: string): Promise<boolean> {
     await git(vault, "remote", "add", "origin", remoteUrl);
   }
 
+  // Keep the ephemeral failed-capture sidecar (`.vaulter/`) out of git so a
+  // raw transcript never lands in the Vault's note space (see ADR-0004). Done
+  // before any commit so the seed commit already carries the ignore.
+  await ensureGitignore(vault);
+
   if (seeding) {
     await seedSkeleton(vault);
     await commitAll(vault, "vaulter: seed vault");
   }
 
   return seeding;
+}
+
+/** Ensure the Vault's `.gitignore` excludes Vaulter's ephemeral sidecar dir, so
+ * a failed capture's raw transcript (held in `.vaulter/pending/`) is never
+ * committed into the note space. Idempotent: appends only if not already there. */
+async function ensureGitignore(vault: string): Promise<void> {
+  const file = path.join(vault, ".gitignore");
+  let current = "";
+  try {
+    current = await fs.readFile(file, "utf8");
+  } catch {
+    /* no .gitignore yet — we'll create one */
+  }
+  if (current.split("\n").some((l) => l.trim() === ".vaulter/")) return;
+  const prefix = current && !current.endsWith("\n") ? `${current}\n` : current;
+  await fs.writeFile(file, `${prefix}.vaulter/\n`);
 }
 
 /** True if the vault repo has an `origin` remote to push to. */

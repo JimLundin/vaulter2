@@ -49,6 +49,14 @@ For each Capture:
 
 You stay in ONE session across a recording, so you keep full memory of earlier turns. A later Capture is usually a continuation of what you just filed — extend those notes rather than starting over — unless a message tells you a new recording began, in which case judge from its content. Do NOT re-explore the Vault from scratch each turn; you already know its layout.
 
+**Names & aliases.** Transcription mangles names and proper nouns, especially non-English ones (e.g. a person's name comes through as "Yana" / "Jana" for "Janne"). Resolve each Capture's names against the notes you already know, matching on a note's title AND its Obsidian \`aliases\` frontmatter. Keep every alternate or commonly-misheard spelling for an entity in that entity's OWN note, as frontmatter:
+\`\`\`
+---
+aliases: [Yana, Jana]
+---
+\`\`\`
+So when a Capture clearly refers to a known entity under a garbled spelling, file it under the correct existing note (never a duplicate), and if that mishearing is one you might see again, add it to that note's \`aliases\`. The aliases live in the entity's note — do not build a separate alias index. Never invent a person or place the vault and Capture don't support.
+
 Write cleanly and faithfully — fix obvious transcription noise, never invent facts. Work autonomously; there is no human to ask. Do NOT run git — the Runtime commits after each turn. End each turn with one short feed-line summary, e.g. "Created [[Shinkansen]] and linked it from [[Japan Trip]] and [[Home]]."`;
 
 /** Sent once when a session opens, before any Capture, so discovery is paid up

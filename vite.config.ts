@@ -14,6 +14,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./web/src", import.meta.url)),
+      // Wire protocol shared with the Runtime (src/feed.ts). Imported type-only,
+      // so nothing from src/ is bundled into the browser output.
+      "@shared": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
   server: {
@@ -21,6 +24,8 @@ export default defineConfig({
     proxy: {
       "/events": { target: `http://localhost:${RUNTIME_PORT}`, changeOrigin: true },
       "/capture": { target: `http://localhost:${RUNTIME_PORT}`, changeOrigin: true },
+      "/commit": { target: `http://localhost:${RUNTIME_PORT}`, changeOrigin: true },
+      "/revert": { target: `http://localhost:${RUNTIME_PORT}`, changeOrigin: true },
     },
   },
   build: {

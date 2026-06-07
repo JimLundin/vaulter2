@@ -107,12 +107,93 @@ export async function pushToRemote(vault: string): Promise<PushResult> {
   }
 }
 
-/** Lay down a minimal starting structure: an inbox, a daily note, a README. */
+/** The seed contents of `meta/conventions.md` — the vault's living constitution.
+ * Written FOR the model: Vaulter reads it at startup and obeys it, and appends to
+ * it when it makes a new structural decision. The owner can edit it in Obsidian
+ * to change the house style. Built as a line array to avoid escaping the Markdown
+ * code fences inside a template literal. */
+const CONVENTIONS = [
+  "# Vault Conventions",
+  "",
+  "This file is the authoritative rulebook for how this vault is organized.",
+  "Vaulter reads it at startup and conforms to it on every Capture. When Vaulter",
+  "makes a new structural decision not covered here, it appends the rule below so",
+  "the vault stays consistent over time. You (the owner) may edit this file to",
+  "change the house style — Vaulter will follow your edits on its next launch.",
+  "",
+  "## Layout — flat namespace",
+  "",
+  "All notes live at the **vault root**. The only folders are:",
+  "- `inbox/` — captures with no clear home yet (a last resort)",
+  "- `daily/` — a dated log of short lines that LINK to topical notes",
+  "- `meta/` — this file and any future vault-meta notes",
+  "",
+  "Do **not** create folder hierarchies for topics. Structure comes from links",
+  "and Maps of Content, not directories.",
+  "",
+  "## Naming",
+  "",
+  "- **Title Case**, **singular** noun: `Mitochondria.md`, `Japan Trip.md`.",
+  "- Never title a note by date (dates belong only in `daily/`).",
+  "- One note = one thing. Split a note that drifts into two topics; merge dupes.",
+  "- **Search before creating**: match against existing note titles AND their",
+  "  `aliases` frontmatter before minting a new note.",
+  "",
+  "## Frontmatter (every note)",
+  "",
+  "```",
+  "---",
+  "type: concept        # concept | person | project | place | term | moc",
+  "aliases: []          # alternate / commonly-misheard spellings",
+  "tags: []             # lowercase, kebab-case topical tags",
+  "created: YYYY-MM-DD",
+  "---",
+  "```",
+  "",
+  "## Note types & templates",
+  "",
+  "Pick the `type` that fits and follow its shape. The first line after the",
+  "frontmatter is a one-sentence definition/summary; bodies use `## ` sections.",
+  "",
+  "- **concept / term** — definition first, then explanation, then `## See also`.",
+  "- **person** — keep every alternate spelling in `aliases`. Sections:",
+  "  `## About`, `## Relationships`, `## Notes`.",
+  "- **project** — sections: `## Status`, `## Next`, `## Log` (dated lines).",
+  "- **place** — sections: `## About`, `## Notes`.",
+  "- **moc** — a hub note: mostly `[[links]]` out to the notes beneath it.",
+  "",
+  "## Linking — never orphan a note",
+  "",
+  "- Every new note must be linked from at least one existing note or MOC.",
+  "- Link densely with `[[wikilinks]]`. If a mentioned thing deserves its own",
+  "  note, create a one-line stub and link it rather than leaving a bare mention.",
+  "- Add `## See also` cross-links so the graph stays connected.",
+  "",
+  "## Maps of Content",
+  "",
+  "- `Home.md` is the root MOC; every topic is reachable from it.",
+  "- When **5 or more** notes share a topic, promote it to its own MOC note",
+  "  (`type: moc`) and link that MOC from `Home`. Until then, link the notes",
+  "  directly from `Home`.",
+  "",
+  "## Conventions added by Vaulter",
+  "",
+  "_(none yet — Vaulter appends new structural decisions here)_",
+  "",
+].join("\n");
+
+/** Lay down a minimal starting structure: an inbox, a daily note, a README, and
+ * — most importantly — `meta/conventions.md`, the vault's living rulebook that
+ * Vaulter reads at startup and conforms to (so structure stays consistent across
+ * sessions instead of being re-guessed each launch). See ADR-0005. */
 async function seedSkeleton(vault: string): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
 
   await fs.mkdir(path.join(vault, "inbox"), { recursive: true });
   await fs.mkdir(path.join(vault, "daily"), { recursive: true });
+  await fs.mkdir(path.join(vault, "meta"), { recursive: true });
+
+  await fs.writeFile(path.join(vault, "meta", "conventions.md"), CONVENTIONS);
 
   // Home is the Map of Content — the entry point Vaulter links every topic from.
   // Seeding it (rather than a bare daily note) steers Vaulter toward a wiki.
@@ -145,6 +226,8 @@ async function seedSkeleton(vault: string): Promise<void> {
       "- `Home.md` — the map of content; the entry point into the wiki",
       "- `inbox/` — captures that haven't found a permanent home yet",
       "- `daily/` — a dated log; short lines that link out to the topical notes",
+      "- `meta/conventions.md` — how this vault is named, structured, and linked",
+      "  (Vaulter reads it and conforms; edit it to change the house style)",
       "",
     ].join("\n"),
   );
@@ -168,4 +251,79 @@ export async function commitAll(
   if (!status) return null; // nothing changed
   await git(vault, "commit", "-q", "-m", message);
   return git(vault, "rev-parse", "--short", "HEAD");
+}
+
+/** A short hash is valid only if it's lowercase hex — guards every helper that
+ * passes a client-supplied hash to git, so a value like `--upstream` or a path
+ * can never be smuggled in as a flag. (execFile already prevents shell injection;
+ * this prevents arg/flag injection.) */
+export function isValidHash(hash: string): boolean {
+  return /^[0-9a-f]{4,40}$/.test(hash);
+}
+
+/** A past Vaulter capture, reconstructed from git history for the feed on
+ * (re)load — only what a commit preserves: its hash, summary, and time. */
+export type RecentCapture = { commit: string; summary: string; at: number };
+
+/** The most recent Vaulter commits, oldest-first (ready to prepend to the feed).
+ * Only `vaulter:`-authored commits are surfaced (the agent's filings, seeds, and
+ * reverts), with that prefix stripped for display. */
+export async function recentCaptures(
+  vault: string,
+  limit = 20,
+): Promise<RecentCapture[]> {
+  // NUL-separate fields and newline-separate records so summaries with any
+  // punctuation survive parsing intact.
+  const out = await git(
+    vault,
+    "log",
+    `-n${limit}`,
+    "--pretty=format:%h%x00%s%x00%ct",
+  ).catch(() => "");
+  if (!out) return [];
+  const rows: RecentCapture[] = [];
+  for (const line of out.split("\n")) {
+    const [commit, subject, ct] = line.split("\0");
+    if (!commit || !subject?.startsWith("vaulter:")) continue;
+    rows.push({
+      commit,
+      summary: subject.slice("vaulter:".length).trim() || "capture",
+      at: Number(ct) || 0,
+    });
+  }
+  return rows.reverse(); // git log is newest-first; the feed wants oldest-first
+}
+
+/** The diff a commit introduced (`git show`), for the UI's per-capture "show
+ * diff" view. Returns null for an invalid/unknown hash. */
+export async function showCommit(vault: string, hash: string): Promise<string | null> {
+  if (!isValidHash(hash)) return null;
+  return git(vault, "show", "--stat", "--patch", hash).catch(() => null);
+}
+
+export type RevertResult =
+  | { status: "reverted"; commit: string }
+  | { status: "failed"; detail: string };
+
+/** Revert a capture's commit, creating a new `vaulter: revert …` commit. On a
+ * conflict (a later capture touched the same lines) the revert is aborted so the
+ * working tree is left clean — the caller surfaces the failure. MUST be called on
+ * the serialized lane so it never races an agent turn's edits. */
+export async function revertCommit(vault: string, hash: string): Promise<RevertResult> {
+  if (!isValidHash(hash)) return { status: "failed", detail: "invalid commit" };
+  const subject = await git(vault, "log", "-1", "--pretty=format:%s", hash).catch(() => "");
+  const label = subject.replace(/^vaulter:\s*/, "").slice(0, 50) || hash;
+  try {
+    await git(vault, "revert", "--no-edit", hash);
+  } catch (err) {
+    // Leave no half-applied revert behind.
+    await git(vault, "revert", "--abort").catch(() => {});
+    const detail = err instanceof Error ? err.message.split("\n")[0] : "revert failed";
+    return { status: "failed", detail };
+  }
+  // git revert already committed; relabel it with our convention so it shows up
+  // in the feed and history like any other Vaulter commit.
+  await git(vault, "commit", "--amend", "-q", "-m", `vaulter: revert ${label}`).catch(() => {});
+  const commit = await git(vault, "rev-parse", "--short", "HEAD");
+  return { status: "reverted", commit };
 }

@@ -31,7 +31,9 @@ starts filing while you're still talking. Each chunk is
 queued and handled one at a time: Vaulter reads your vault, conforms to its
 structure, files the note, and commits to git. The feed shows what it did.
 
-The vault folder is created and seeded with a tiny skeleton on first run.
+The vault folder is created and seeded on first run with a tiny skeleton and a
+`meta/conventions.md` rulebook (naming, frontmatter, note types, flat layout,
+linking) that Vaulter conforms to — edit it to change the house style.
 
 ### Remote sync (optional)
 
@@ -64,9 +66,11 @@ helper); Vaulter runs `git push` with your normal git credentials.
 - **`src/agent.ts`** — one Claude Agent SDK `query()` for the whole server, fed
   every chunk as a streaming input so the model keeps the vault in context (the
   vault is discovered once at launch, never re-discovered per chunk or per
-  recording). The conform-to-vault system prompt, the model (`claude-haiku-4-5`),
-  and event streaming live here.
-- **`src/vault.ts`** — first-run seeding and the one-commit-per-capture git logic.
+  recording). The conform-to-vault system prompt, the model (`claude-sonnet-4-6`),
+  and event streaming live here. The prompt points Vaulter at the vault's own
+  `meta/conventions.md` rulebook rather than hard-coding the structure.
+- **`src/vault.ts`** — first-run seeding (including `meta/conventions.md`, the
+  living rulebook Vaulter conforms to) and the one-commit-per-capture git logic.
 - **`web/`** — the browser UI (React + Vite + Tailwind): a scrolling log of your
   spoken text and what Vaulter does with it, with a compact recorder (mic + live
   waveform) docked at the bottom. Vite bundles it into `public/`, which the

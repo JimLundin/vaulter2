@@ -261,39 +261,6 @@ export function isValidHash(hash: string): boolean {
   return /^[0-9a-f]{4,40}$/.test(hash);
 }
 
-/** A past Vaulter capture, reconstructed from git history for the feed on
- * (re)load — only what a commit preserves: its hash, summary, and time. */
-export type RecentCapture = { commit: string; summary: string; at: number };
-
-/** The most recent Vaulter commits, oldest-first (ready to prepend to the feed).
- * Only `vaulter:`-authored commits are surfaced (the agent's filings, seeds, and
- * reverts), with that prefix stripped for display. */
-export async function recentCaptures(
-  vault: string,
-  limit = 20,
-): Promise<RecentCapture[]> {
-  // NUL-separate fields and newline-separate records so summaries with any
-  // punctuation survive parsing intact.
-  const out = await git(
-    vault,
-    "log",
-    `-n${limit}`,
-    "--pretty=format:%h%x00%s%x00%ct",
-  ).catch(() => "");
-  if (!out) return [];
-  const rows: RecentCapture[] = [];
-  for (const line of out.split("\n")) {
-    const [commit, subject, ct] = line.split("\0");
-    if (!commit || !subject?.startsWith("vaulter:")) continue;
-    rows.push({
-      commit,
-      summary: subject.slice("vaulter:".length).trim() || "capture",
-      at: Number(ct) || 0,
-    });
-  }
-  return rows.reverse(); // git log is newest-first; the feed wants oldest-first
-}
-
 /** The diff a commit introduced (`git show`), for the UI's per-capture "show
  * diff" view. Returns null for an invalid/unknown hash. */
 export async function showCommit(vault: string, hash: string): Promise<string | null> {

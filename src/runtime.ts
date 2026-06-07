@@ -9,14 +9,7 @@ import {
   type AgentEvent,
   type Session,
 } from "./agent.js";
-import {
-  commitAll,
-  pushToRemote,
-  recentCaptures,
-  showCommit,
-  revertCommit,
-  isValidHash,
-} from "./vault.js";
+import { commitAll, pushToRemote, showCommit, revertCommit, isValidHash } from "./vault.js";
 import {
   persistSidecar,
   removeSidecar,
@@ -371,16 +364,6 @@ export function createRuntime(vault: string) {
         clearInterval(ping);
         clients.delete(res);
       });
-      // Replay recent history to THIS client (best-effort) so a browser reload
-      // restores the feed instead of starting blank. Live events still flow via
-      // the clients set; the UI keys history separately so ordering is fine.
-      void recentCaptures(vault)
-        .then((captures) => {
-          if (captures.length && !res.writableEnded) {
-            res.write(`data: ${JSON.stringify({ type: "history", captures })}\n\n`);
-          }
-        })
-        .catch(() => {});
       return;
     }
 

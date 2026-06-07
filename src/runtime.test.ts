@@ -27,7 +27,6 @@ vi.mock("./agent.js", () => ({
 vi.mock("./vault.js", () => ({
   commitAll: vi.fn(async () => "abc1234"),
   pushToRemote: vi.fn(async () => ({ status: "no-remote" as const })),
-  recentCaptures: vi.fn(async () => []),
   showCommit: vi.fn(async (_v: string, hash: string) => `diff for ${hash}`),
   revertCommit: vi.fn(async (_v: string, hash: string) => ({ status: "reverted" as const, commit: `rev-${hash}` })),
   isValidHash: (hash: string) => /^[0-9a-f]{4,40}$/.test(hash),

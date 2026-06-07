@@ -15,7 +15,6 @@ export type SyncState = "synced" | "local" | "failed";
 export type FeedEvent =
   | { type: "info"; model: string; ready: boolean }
   | { type: "ready" }
-  | { type: "history"; captures: HistoryCapture[] }
   | { type: "queued"; id: number; transcript: string }
   | { type: "start"; id: number }
   | { type: "text"; id: number; text: string }
@@ -41,13 +40,3 @@ export type FeedEvent =
       syncDetail?: string;
       error?: string;
     };
-
-/** A past capture reconstructed from git history on (re)load, so a browser
- * refresh doesn't lose the log. Coarser than a live capture — only what a commit
- * preserves (its summary line and hash), no per-action breakdown. */
-export type HistoryCapture = {
-  commit: string;
-  summary: string;
-  /** Unix epoch seconds of the commit, for display. */
-  at: number;
-};

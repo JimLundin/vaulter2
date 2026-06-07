@@ -8,7 +8,6 @@ import {
   Copy,
   FilePlus2,
   GitCommitHorizontal,
-  History,
   Loader2,
   Mic,
   PencilLine,
@@ -109,11 +108,11 @@ export function CaptureCard({ capture: c }: { capture: Capture }) {
         c.state === "error" && "border-record/60",
       )}
     >
-      {/* Headline: spoken text for a live capture, or the summary for a row
-          reconstructed from git history (no transcript to show). */}
-      {c.historical ? (
+      {/* Headline: spoken text for a live capture, or a one-line summary for a
+          status-marker row (e.g. a revert outcome — no transcript to show). */}
+      {c.marker ? (
         <div className="flex gap-2.5">
-          <History className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
+          <RotateCcw className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
           <p className="leading-relaxed text-foreground/90">{c.summary ?? c.error ?? "—"}</p>
         </div>
       ) : (

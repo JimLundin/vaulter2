@@ -9,7 +9,14 @@ import {
   type AgentEvent,
   type Session,
 } from "./agent.js";
-import { commitAll, pushToRemote } from "./vault.js";
+import {
+  commitAll,
+  pushToRemote,
+  recentCaptures,
+  showCommit,
+  revertCommit,
+  isValidHash,
+} from "./vault.js";
 import {
   persistSidecar,
   removeSidecar,
@@ -17,25 +24,7 @@ import {
   stampOf,
   nextStamp,
 } from "./pending.js";
-
-/** A feed event broadcast to every connected browser over SSE. */
-type FeedEvent =
-  | { type: "info"; model: string; ready: boolean }
-  | { type: "ready" }
-  | { type: "queued"; id: number; transcript: string }
-  | { type: "start"; id: number }
-  | { type: "text"; id: number; text: string }
-  | { type: "tool"; id: number; tool: string; target: string }
-  | { type: "retry"; id: number; attempts: number; message: string }
-  | {
-      type: "done";
-      id: number;
-      summary: string;
-      commit: string | null;
-      sync: "synced" | "local" | "failed";
-      syncDetail?: string;
-    }
-  | { type: "error"; id: number; message: string };
+import type { FeedEvent, SyncState } from "./feed.js";
 
 /** A capture waiting (or re-queued) for the serialized session. `attempts` is
  * the number of times its filing turn has already FAILED; `sidecar` is the path
@@ -86,6 +75,10 @@ export function createRuntime(vault: string) {
   // its transcript is persisted to a sidecar and re-queued onto this same lane
   // (see `fail`), so no Capture is ever lost.
   const pending: QueueItem[] = [];
+  // Commit hashes the UI asked to revert. They ride the SAME serialized lane as
+  // captures (drained by pump while `busy` is held) so a git revert never races
+  // an agent turn's edits — the core no-concurrent-writers invariant.
+  const reverts: string[] = [];
   let nextId = 1;
   let session: Session | null = null;
   let ready = false; // discovery warm-up finished
@@ -95,7 +88,19 @@ export function createRuntime(vault: string) {
   let lastRecordingId: string | null = null;
 
   function pump(): void {
-    if (busy || !session) return;
+    if (busy) return;
+    // Reverts take the lane first and don't need the agent session (pure git), so
+    // they can run even while a dead session waits to be reopened.
+    if (reverts.length) {
+      const hash = reverts.shift()!;
+      busy = true;
+      void doRevert(hash).finally(() => {
+        busy = false;
+        pump();
+      });
+      return;
+    }
+    if (!session) return;
     const head = pending.shift();
     if (!head) return;
     busy = true;
@@ -109,14 +114,34 @@ export function createRuntime(vault: string) {
     session.send(message);
   }
 
+  /** Revert one capture's commit on the serialized lane, then push, broadcasting
+   * the outcome. Held under `busy` by pump, so no agent turn or other git op runs
+   * meanwhile. */
+  async function doRevert(hash: string): Promise<void> {
+    const r = await revertCommit(vault, hash);
+    if (r.status === "failed") {
+      broadcast({ type: "reverted", of: hash, commit: null, sync: "local", error: r.detail });
+      return;
+    }
+    let sync: SyncState = "local";
+    let syncDetail: string | undefined;
+    const push = await pushToRemote(vault);
+    if (push.status === "pushed") sync = "synced";
+    else if (push.status === "failed") {
+      sync = "failed";
+      syncDetail = push.detail;
+    }
+    broadcast({ type: "reverted", of: hash, commit: r.commit, sync, syncDetail });
+  }
+
   /** Commit the Vault and (if a remote is set) push it, surfacing the result as
    * the `done` event's commit/sync fields. Shared by the success and the
    * terminal-fallback paths so both commit identically. */
   async function commitAndPush(
     message: string,
-  ): Promise<{ commit: string | null; sync: "synced" | "local" | "failed"; syncDetail?: string }> {
+  ): Promise<{ commit: string | null; sync: SyncState; syncDetail?: string }> {
     const commit = await commitAll(vault, message.slice(0, 72));
-    let sync: "synced" | "local" | "failed" = "local";
+    let sync: SyncState = "local";
     let syncDetail: string | undefined;
     if (commit) {
       const r = await pushToRemote(vault);
@@ -306,6 +331,16 @@ export function createRuntime(vault: string) {
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? "/";
 
+    // The Runtime binds to 127.0.0.1, but a malicious page can still try DNS
+    // rebinding — resolving its own hostname to 127.0.0.1 so the browser POSTs
+    // here under an attacker `Host`. Accept only loopback hosts; this process
+    // holds the owner's vault and `claude` credentials, so the guard is cheap.
+    const host = (req.headers.host ?? "").replace(/:\d+$/, "");
+    if (host && !["localhost", "127.0.0.1", "[::1]", "::1"].includes(host)) {
+      res.writeHead(403).end("forbidden host");
+      return;
+    }
+
     if (req.method === "GET" && (url === "/" || url === "/index.html")) {
       try {
         const html = await fs.readFile(INDEX_HTML);
@@ -326,7 +361,26 @@ export function createRuntime(vault: string) {
       res.write(": connected\n\n");
       res.write(`data: ${JSON.stringify({ type: "info", model: MODEL, ready })}\n\n`);
       clients.add(res);
-      req.on("close", () => clients.delete(res));
+      // Heartbeat: a comment frame keeps the connection alive through any
+      // intermediary idle timeout and surfaces a half-open socket so it gets
+      // cleaned up. EventSource ignores comment frames.
+      const ping = setInterval(() => {
+        if (!res.writableEnded) res.write(": ping\n\n");
+      }, 25_000);
+      req.on("close", () => {
+        clearInterval(ping);
+        clients.delete(res);
+      });
+      // Replay recent history to THIS client (best-effort) so a browser reload
+      // restores the feed instead of starting blank. Live events still flow via
+      // the clients set; the UI keys history separately so ordering is fine.
+      void recentCaptures(vault)
+        .then((captures) => {
+          if (captures.length && !res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "history", captures })}\n\n`);
+          }
+        })
+        .catch(() => {});
       return;
     }
 
@@ -354,6 +408,45 @@ export function createRuntime(vault: string) {
         capture(rid, transcript);
         res.writeHead(202, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ queued: pending.length }));
+      });
+      return;
+    }
+
+    // The diff a capture's commit introduced (per-capture "show diff").
+    if (req.method === "GET" && url.startsWith("/commit/")) {
+      const m = url.match(/^\/commit\/([0-9a-f]{4,40})\/diff$/);
+      if (m) {
+        const diff = await showCommit(vault, m[1]);
+        res.writeHead(diff == null ? 404 : 200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(diff == null ? { error: "unknown commit" } : { diff }));
+        return;
+      }
+    }
+
+    // Revert a capture's commit. Queued onto the serialized lane (see `reverts`),
+    // so the git revert never races an in-flight agent turn.
+    if (req.method === "POST" && url === "/revert") {
+      let body = "";
+      req.on("data", (c) => {
+        body += c;
+        if (body.length > 10_000) req.destroy();
+      });
+      req.on("end", () => {
+        let commit = "";
+        try {
+          commit = (JSON.parse(body).commit ?? "").toString();
+        } catch {
+          /* fall through to 400 */
+        }
+        if (!isValidHash(commit)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "need a valid commit" }));
+          return;
+        }
+        reverts.push(commit);
+        pump();
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ queued: reverts.length }));
       });
       return;
     }

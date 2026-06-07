@@ -19,9 +19,8 @@ export type SpeechCapture = {
   analyser: AnalyserNode | null;
 };
 
-/** Send a chunk to the Runtime. `final` marks the last chunk of a recording for
- * the UI's own flushing; the Runtime does not act on it. An empty + final send
- * closes the recording's notion of "new topic" without filing anything. */
+/** Send a chunk to the Runtime under the current recording's id (the Runtime
+ * uses a change in id to detect a new recording / possible new topic). */
 async function postCapture(recordingId: string, transcript: string) {
   await fetch("/capture", {
     method: "POST",
@@ -51,9 +50,9 @@ export function useSpeechCapture(): SpeechCapture {
   const recordingIdRef = useRef<string | null>(null);
   const audioRef = useRef<AudioMeter | null>(null);
 
-  const send = useCallback((transcript: string, final: boolean) => {
-    const text = (transcript || "").trim();
-    if (!text && !final) return;
+  const send = useCallback((transcript: string) => {
+    const text = transcript.trim();
+    if (!text) return;
     if (!recordingIdRef.current) {
       recordingIdRef.current = `${performance.now().toFixed(0)}-${Math.round(Math.random() * 1e6)}`;
     }
@@ -106,17 +105,17 @@ export function useSpeechCapture(): SpeechCapture {
       if (chunk.length < MIN_CHUNK_CHARS) return;
       pendingFinalRef.current = "";
       setInterim("");
-      send(chunk, false);
+      send(chunk);
     };
 
-    // On stop: send the tail (however small) and close the recording's session.
+    // On stop: send the tail (however small). An empty tail sends nothing — the
+    // recording boundary is carried by the next recording minting a fresh id.
     const flushFinal = () => {
       if (gapTimerRef.current) clearTimeout(gapTimerRef.current);
       const chunk = pendingFinalRef.current.trim();
       pendingFinalRef.current = "";
       setInterim("");
-      if (chunk) send(chunk, true);
-      else if (recordingIdRef.current) send("", true);
+      if (chunk) send(chunk);
     };
 
     rec.onstart = () => setRecording(true);
@@ -186,7 +185,7 @@ export function useSpeechCapture(): SpeechCapture {
     (text: string) => {
       if (!text.trim()) return;
       recordingIdRef.current = null; // each typed note is its own one-Capture session
-      send(text, true);
+      send(text);
     },
     [send],
   );

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Mic, Square, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,24 @@ import type { SpeechCapture } from "@/hooks/useSpeechCapture";
  * words themselves stream into the feed as a pending entry (see CaptureFeed). */
 export function Composer({ capture }: { capture: SpeechCapture }) {
   const { supported, recording, error, analyser, toggle, submitTyped } = capture;
+
+  // Space toggles recording on/off (not push-to-hold) — a hands-on-keyboard
+  // alternative to the mic button. Ignored while typing or when a control is
+  // focused (so Space still works normally there), and only when speech capture
+  // is available.
+  useEffect(() => {
+    if (!supported) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON" || el?.isContentEditable) return;
+      e.preventDefault(); // don't scroll the page
+      toggle();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [supported, toggle]);
 
   if (!supported) return <TypedComposer onSubmit={submitTyped} />;
 
@@ -37,7 +55,7 @@ export function Composer({ capture }: { capture: SpeechCapture }) {
             <p className="text-sm text-record">{error}</p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              Press to record. Vaulter files each thought as you pause.
+              Press to record (or tap <kbd className="rounded border border-border px-1 text-xs">Space</kbd>). Vaulter files each thought as you pause.
             </p>
           )}
         </div>

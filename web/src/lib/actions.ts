@@ -1,26 +1,84 @@
 import type { ToolCall } from "@/lib/types";
 
 /** A tool call humanized into a meaningful action on the Vault — "Created
- * Shinkansen", "Edited Japan Trip" — instead of the raw command/path the agent
- * ran. Non-meaningful tool calls (mkdir, ls, plain Bash) collapse to null. */
-export type ActionKind = "read" | "create" | "edit" | "move" | "search";
+ * Shinkansen", "Renamed Yana → Janne", "Deleted Old Note" — instead of the raw
+ * command/path the agent ran. Non-meaningful tool calls (mkdir, ls, plain Bash)
+ * collapse to null. */
+export type ActionKind =
+  | "read"
+  | "create"
+  | "update"
+  | "rename"
+  | "move"
+  | "delete"
+  | "copy"
+  | "search";
+
 export type Action = { kind: ActionKind; verb: string; label: string };
 
 /** A vault path → the Note's display name (basename, no folders, no .md). */
 function noteName(p: string): string {
   const base = (p.split("/").pop() || p).trim();
-  return base.replace(/\.md$/i, "") || p;
+  return base.replace(/\.md$/i, "") || p.trim();
 }
 
-function unquote(s: string): string {
-  return s.trim().replace(/^['"]|['"]$/g, "");
+function dirOf(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? "" : p.slice(0, i);
 }
 
-/** Only a couple of Bash commands map to a real Vault action (renames/merges via
- * `mv`); everything else (mkdir, ls, cat…) isn't a meaningful action to show. */
+/** Split a shell command into tokens, honoring quotes — Note names have spaces
+ * ("Coast Weekend.md"), so a naive split on whitespace mangles them. */
+function tokenize(cmd: string): string[] {
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd))) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  return out;
+}
+
+/** Map one shell subcommand to a Vault action (rename/move/delete/copy). */
+function fromSubcommand(sub: string): Action | null {
+  const toks = tokenize(sub.trim());
+  if (!toks.length) return null;
+  const cmd = (toks[0].split("/").pop() || toks[0]).toLowerCase();
+  const args = toks.slice(1).filter((t) => !t.startsWith("-")); // drop flags
+
+  switch (cmd) {
+    case "rm":
+    case "unlink": {
+      if (!args.length) return null;
+      const label =
+        args.length > 1 ? `${noteName(args[0])} (+${args.length - 1} more)` : noteName(args[0]);
+      return { kind: "delete", verb: "Deleted", label };
+    }
+    case "mv": {
+      if (args.length < 2) return null;
+      const src = args[0];
+      const dst = args[args.length - 1];
+      // Same folder → a rename; different folder → a move.
+      if (dirOf(src) === dirOf(dst)) {
+        return { kind: "rename", verb: "Renamed", label: `${noteName(src)} → ${noteName(dst)}` };
+      }
+      const destDir = dirOf(dst).split("/").pop() || "root";
+      return { kind: "move", verb: "Moved", label: `${noteName(src)} → ${destDir}` };
+    }
+    case "cp": {
+      if (args.length < 2) return null;
+      return { kind: "copy", verb: "Copied", label: noteName(args[args.length - 1]) };
+    }
+    default:
+      return null; // mkdir, touch, ls, cat, echo… aren't meaningful Note actions
+  }
+}
+
+/** A Bash call may chain commands (`mkdir -p X && mv a X/`); surface the first
+ * meaningful Note action among them. */
 function fromBash(cmd: string): Action | null {
-  const mv = cmd.trim().match(/^mv\s+(?:-\S+\s+)*(.+?)\s+(\S+)\s*$/);
-  if (mv) return { kind: "move", verb: "Moved", label: `${noteName(unquote(mv[1]))} → ${noteName(unquote(mv[2]))}` };
+  for (const sub of cmd.split(/&&|\|\||;/)) {
+    const a = fromSubcommand(sub);
+    if (a) return a;
+  }
   return null;
 }
 
@@ -30,7 +88,7 @@ function humanize(t: ToolCall): Action | null {
       return { kind: "create", verb: "Created", label: noteName(t.target) };
     case "Edit":
     case "MultiEdit":
-      return { kind: "edit", verb: "Edited", label: noteName(t.target) };
+      return { kind: "update", verb: "Updated", label: noteName(t.target) };
     case "Read":
       return { kind: "read", verb: "Read", label: noteName(t.target) };
     case "Glob":

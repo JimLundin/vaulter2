@@ -19,6 +19,11 @@ export function useFeed(): Feed {
   const [ready, setReady] = useState(false);
   const [connected, setConnected] = useState(false);
 
+  // Synthetic ids for entries that aren't live captures (history rows, revert
+  // markers). Negative and decreasing so they never collide with the Runtime's
+  // positive capture ids.
+  const synthId = useRef(-1);
+
   // Fold one event into the capture with this id, creating it if needed.
   const patch = useRef((id: number, fn: (c: Capture) => Capture) => {
     setCaptures((prev) => {
@@ -46,6 +51,48 @@ export function useFeed(): Feed {
           break;
         case "ready":
           setReady(true);
+          break;
+        case "history":
+          // Past captures rebuilt from git, oldest-first. Prepend them (once, on
+          // connect) as slim historical rows, skipping any whose commit is
+          // already shown live so a reconnect doesn't duplicate.
+          setCaptures((prev) => {
+            const known = new Set(prev.map((c) => c.commit).filter(Boolean));
+            const rows: Capture[] = ev.captures
+              .filter((h) => !known.has(h.commit))
+              .map((h) => ({
+                id: synthId.current--,
+                transcript: "",
+                state: "done" as const,
+                agentText: "",
+                tools: [],
+                attempts: 0,
+                summary: h.summary,
+                commit: h.commit,
+                historical: true,
+              }));
+            return [...rows, ...prev];
+          });
+          break;
+        case "reverted":
+          // Append a marker row for the revert outcome (success or failure).
+          setCaptures((prev) => [
+            ...prev,
+            {
+              id: synthId.current--,
+              transcript: "",
+              state: ev.commit ? ("done" as const) : ("error" as const),
+              agentText: "",
+              tools: [],
+              attempts: 0,
+              summary: ev.commit ? `Reverted ${ev.of}` : undefined,
+              error: ev.commit ? undefined : `Couldn't revert ${ev.of}: ${ev.error ?? "failed"}`,
+              commit: ev.commit ?? undefined,
+              sync: ev.sync,
+              syncDetail: ev.syncDetail,
+              historical: true,
+            },
+          ]);
           break;
         case "queued":
           patch.current(ev.id, (c) => ({ ...c, transcript: ev.transcript, state: "queued" }));

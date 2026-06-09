@@ -49,7 +49,16 @@ async function main() {
 
   server.listen(port, "127.0.0.1", () => {
     const urlStr = `http://localhost:${port}`;
-    console.log(`Vaulter is running at ${urlStr}`);
+    // In `npm run dev`, Vite serves the live UI (with HMR) and proxies the API
+    // here — so the Runtime's own port serves only the last-built bundle. The
+    // dev script passes Vite's URL so we point the developer there, not at the
+    // stale bundle. (No VAULTER_DEV_URL in production: the Runtime serves the UI.)
+    const devUrl = process.env.VAULTER_DEV_URL;
+    if (devUrl) {
+      console.log(`Runtime (API) on ${urlStr} — open ${devUrl} for the dev UI (HMR).`);
+    } else {
+      console.log(`Vaulter is running at ${urlStr}`);
+    }
     console.log("Using your on-disk `claude` subscription login (no API key).");
     console.log("Press Ctrl+C to stop.");
     if (!process.env.VAULTER_NO_OPEN) openBrowser(urlStr);

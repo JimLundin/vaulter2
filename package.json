@@ -16,7 +16,7 @@
     "build:runtime": "tsc",
     "dev": "concurrently -k -n web,runtime -c cyan,magenta \"npm:dev:web\" \"npm:dev:runtime\"",
     "dev:web": "vite",
-    "dev:runtime": "VAULTER_NO_OPEN=1 VAULTER_VAULT=${VAULTER_VAULT:-.dev-vault} tsx watch src/cli.ts",
+    "dev:runtime": "VAULTER_NO_OPEN=1 VAULTER_DEV_URL=http://localhost:5173 VAULTER_VAULT=${VAULTER_VAULT:-.dev-vault} tsx watch src/cli.ts",
     "start": "node dist/cli.js",
     "test": "vitest run",
     "test:watch": "vitest",

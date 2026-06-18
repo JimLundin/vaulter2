@@ -19,17 +19,10 @@ export type SpeechCapture = {
   analyser: AnalyserNode | null;
 };
 
-/** Send a chunk to the Runtime under the current recording's id (the Runtime
- * uses a change in id to detect a new recording / possible new topic). */
-async function postCapture(recordingId: string, transcript: string) {
-  await fetch("/capture", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ recordingId, transcript }),
-  });
-}
-
-export function useSpeechCapture(): SpeechCapture {
+/** Drive speech capture, handing each finished thought-chunk to `onChunk` (which
+ * enqueues it for filing). Decoupled from transport so the filing queue owns how
+ * captures reach the agent. */
+export function useSpeechCapture(onChunk: (text: string) => void): SpeechCapture {
   const SR =
     typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : undefined;
   const supported = !!SR;
@@ -44,20 +37,15 @@ export function useSpeechCapture(): SpeechCapture {
   const recordingRef = useRef(false); // the user's intent to be recording
   const pendingFinalRef = useRef(""); // finalized transcript not yet sent
   const gapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // One recording = one recordingId. A null id means the next send starts a
-  // fresh Vaulter "new recording" (so the agent can tell a new topic from a
-  // continuation); postCapture lazily mints one.
-  const recordingIdRef = useRef<string | null>(null);
   const audioRef = useRef<AudioMeter | null>(null);
 
-  const send = useCallback((transcript: string) => {
-    const text = transcript.trim();
-    if (!text) return;
-    if (!recordingIdRef.current) {
-      recordingIdRef.current = `${performance.now().toFixed(0)}-${Math.round(Math.random() * 1e6)}`;
-    }
-    void postCapture(recordingIdRef.current, text);
-  }, []);
+  const send = useCallback(
+    (transcript: string) => {
+      const text = transcript.trim();
+      if (text) onChunk(text);
+    },
+    [onChunk],
+  );
 
   // --- Live mic level (separate from Web Speech, which exposes no audio) ---
   const startMeter = useCallback(async () => {
@@ -169,7 +157,6 @@ export function useSpeechCapture(): SpeechCapture {
     if (!rec) return;
     if (!recordingRef.current) {
       recordingRef.current = true;
-      recordingIdRef.current = null; // a fresh recording → a fresh Vaulter session
       pendingFinalRef.current = "";
       setInterim("");
       setError(null);
@@ -183,9 +170,7 @@ export function useSpeechCapture(): SpeechCapture {
 
   const submitTyped = useCallback(
     (text: string) => {
-      if (!text.trim()) return;
-      recordingIdRef.current = null; // each typed note is its own one-Capture session
-      send(text);
+      if (text.trim()) send(text);
     },
     [send],
   );

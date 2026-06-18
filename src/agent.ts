@@ -1,34 +1,17 @@
-import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createClaudeCode } from "ai-sdk-provider-claude-code";
 
-/** The model Vaulter files captures with. Sonnet follows the structural rulebook
- * in `meta/conventions.md` far more faithfully than Haiku, which is what keeps
- * the vault consistent; the cost is higher per-capture latency. To trade
- * fidelity back for speed, change this to "claude-haiku-4-5". */
-export const MODEL = "claude-sonnet-4-6";
+/** The model Vaulter files captures with, as a provider alias (the provider maps
+ * `sonnet` to the current Sonnet the `claude` CLI uses). Sonnet follows the
+ * structural rulebook in `meta/conventions.md` far more faithfully than Haiku,
+ * which is what keeps the vault consistent; the cost is higher per-capture
+ * latency. To trade fidelity back for speed, change this to "haiku". */
+export const MODEL = "sonnet";
 
-/** A live event from the current turn, streamed to the browser feed. */
-export type AgentEvent =
-  | { kind: "text"; text: string }
-  | { kind: "tool"; tool: string; target: string };
-
-export interface SessionCallbacks {
-  /** Text/tool activity during the turn currently being filed. */
-  onEvent: (e: AgentEvent) => void;
-  /** A turn succeeded; `summary` is its feed line. Awaited before the next turn
-   * is released, so the Runtime can commit without racing the agent. */
-  onTurnComplete: (summary: string) => Promise<void> | void;
-  /** A single turn failed, but the session is still usable for later turns. */
-  onTurnError: (message: string) => void;
-  /** The session ended/threw and is no longer usable; it must be reopened. */
-  onFatal: (message: string) => void;
-}
-
-/** A long-lived Vaulter session: many captures, one shared context (so the Vault
- * is discovered once, not re-explored per chunk). */
-export interface Session {
-  /** Feed one message in as a turn. Call only when the previous turn is done. */
-  send(message: string): void;
-}
+/** Tools the agent may use, as an explicit allowlist (issue #3). With
+ * `settingSources: []` and this whitelist, nothing else is reachable: no Bash, no
+ * inherited MCP servers, no ToolSearch. Read/Glob/Grep explore the Vault;
+ * Write/Edit file notes; WebSearch/WebFetch attach real reference links. */
+const ALLOWED_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"];
 
 const SYSTEM_PROMPT = `You are Vaulter. The owner speaks; each message you receive is a Capture — a chunk of transcript — and your job is to weave it into a personal **wiki**: a web of densely interlinked atomic Markdown notes (Obsidian-style). It is NOT a journal and NOT a pile of daily logs.
 
@@ -52,7 +35,7 @@ For each Capture:
 2. For each, find or create its note (per the conventions) and add the new material there, cleanly written.
 3. Wire up the links — between those notes, to related existing notes, and from the relevant hub/MOC.
 
-You stay in ONE session across a recording, so you keep full memory of earlier turns. A later Capture is usually a continuation of what you just filed — extend those notes rather than starting over — unless a message tells you a new recording began, in which case judge from its content. Do NOT re-explore the Vault from scratch each turn; you already know its layout and conventions.
+You stay in ONE conversation across a recording, so you keep full memory of earlier turns. A later Capture is usually a continuation of what you just filed — extend those notes rather than starting over — unless its content clearly starts a new topic. Do NOT re-explore the Vault from scratch each turn; you already know its layout and conventions.
 
 **Names & aliases.** Transcription mangles names and proper nouns, especially non-English ones (e.g. a person's name comes through as "Yana" / "Jana" for "Janne"). Resolve each Capture's names against the notes you already know, matching on a note's title AND its Obsidian \`aliases\` frontmatter. Keep every alternate or commonly-misheard spelling for an entity in that entity's OWN note, as frontmatter:
 \`\`\`
@@ -64,124 +47,19 @@ So when a Capture clearly refers to a known entity under a garbled spelling, fil
 
 Write cleanly and faithfully — fix obvious transcription noise, never invent facts. Work autonomously; there is no human to ask. Do NOT run git — the Runtime commits after each turn. End each turn with one short feed-line summary, e.g. "Created [[Shinkansen]] and linked it from [[Japan Trip]] and [[Home]]."`;
 
-/** Sent once when a session opens, before any Capture, so discovery is paid up
- * front (at server launch) instead of on the first real chunk. */
-export const DISCOVERY_PRIMER = `You are starting up — no Captures have arrived yet. Orient yourself now so you're ready:
-1. Read \`meta/conventions.md\` — this vault's authoritative rulebook for naming, frontmatter, note types, layout, and linking. Internalize it; you will obey it for every Capture.
-2. List the directory tree and read \`Home.md\` plus a sampling of existing notes, to see how those conventions are applied in practice and to learn the vault's current topics and structure.
-This is READ-ONLY: do not create or modify any files yet. Reply with a one-line summary of what the Vault currently contains and the conventions in force.`;
-
 /**
- * Open a Vaulter session over the Vault. Built-in tools (Read/Write/Edit/Bash/
- * Glob/Grep) operate in `cwd`. Subscription auth is forced by stripping any
- * metered API key from the child env (see ADR-0001).
+ * Build the subscription-authed Vaulter model, scoped to the Vault and locked to
+ * the filesystem/web toolset. Subscription auth (no API key) is handled inside the
+ * Claude Agent SDK that this provider wraps (ADR-0001); the agentic tool loop runs
+ * there too, so a single `streamText` call files one Capture end to end.
  */
-export function startSession(vault: string, cb: SessionCallbacks): Session {
-  const env = { ...process.env };
-  delete env.ANTHROPIC_API_KEY;
-
-  const stream = new MessageStream();
-
-  const q = query({
-    prompt: stream,
-    options: {
-      cwd: vault,
-      env,
-      model: MODEL,
-      systemPrompt: SYSTEM_PROMPT,
-      permissionMode: "acceptEdits",
-      // Give Vaulter the web so it can attach REAL reference links (Wikipedia,
-      // official sites) to notes instead of recalling URLs from memory. These
-      // are read-only tools; auto-allowing them keeps the headless session from
-      // stalling on a permission prompt nobody is here to answer.
-      allowedTools: ["WebSearch", "WebFetch"],
-      includePartialMessages: true,
-    },
+export function buildModel(vault: string) {
+  return createClaudeCode()(MODEL, {
+    cwd: vault,
+    permissionMode: "acceptEdits", // headless: accept file edits without a prompt
+    allowedTools: ALLOWED_TOOLS,
+    settingSources: [], // isolation: ignore the owner's ~/.claude settings & MCP
+    mcpServers: {}, // no MCP servers — keep the toolset to the allowlist above
+    systemPrompt: SYSTEM_PROMPT,
   });
-
-  // Consume the agent's output in the background, mapping it onto turns.
-  (async () => {
-    let summary = "";
-    try {
-      for await (const message of q) {
-        if (message.type === "stream_event") {
-          const event = message.event;
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta" &&
-            event.delta.text
-          ) {
-            cb.onEvent({ kind: "text", text: event.delta.text });
-          }
-        } else if (message.type === "assistant") {
-          for (const block of message.message.content) {
-            if (block.type === "tool_use") {
-              cb.onEvent({
-                kind: "tool",
-                tool: block.name,
-                target: describeToolTarget(block.input),
-              });
-            } else if (block.type === "text" && block.text.trim()) {
-              summary = block.text.trim();
-            }
-          }
-        } else if (message.type === "result") {
-          if (message.subtype === "success") {
-            await cb.onTurnComplete((message.result || summary).trim());
-          } else {
-            cb.onTurnError(message.subtype);
-          }
-          summary = "";
-        }
-      }
-    } catch (err) {
-      cb.onFatal(err instanceof Error ? err.message : String(err));
-    }
-  })();
-
-  return {
-    send: (message: string) => stream.push(message),
-  };
-}
-
-/** A push-driven async iterable of user messages, fed one turn at a time. */
-class MessageStream implements AsyncIterable<SDKUserMessage> {
-  private queue: SDKUserMessage[] = [];
-  private waiting: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
-
-  push(text: string): void {
-    const msg: SDKUserMessage = {
-      type: "user",
-      message: { role: "user", content: text },
-      parent_tool_use_id: null,
-    } as SDKUserMessage;
-    if (this.waiting) {
-      this.waiting({ value: msg, done: false });
-      this.waiting = null;
-    } else {
-      this.queue.push(msg);
-    }
-  }
-
-  async *[Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
-    while (true) {
-      if (this.queue.length) {
-        yield this.queue.shift()!;
-        continue;
-      }
-      const r = await new Promise<IteratorResult<SDKUserMessage>>((res) => {
-        this.waiting = res;
-      });
-      yield r.value;
-    }
-  }
-}
-
-/** Pull a human-readable target (file path / pattern / command) out of a tool input. */
-function describeToolTarget(input: unknown): string {
-  if (!input || typeof input !== "object") return "";
-  const i = input as Record<string, unknown>;
-  const val =
-    i.file_path ?? i.path ?? i.pattern ?? i.command ?? i.notebook_path ?? "";
-  return typeof val === "string" ? val : "";
 }

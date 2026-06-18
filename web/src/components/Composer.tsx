@@ -7,7 +7,7 @@ import type { SpeechCapture } from "@/hooks/useSpeechCapture";
 
 /** The composer bar pinned at the bottom — a compact recorder so the action log
  * above gets the room. While recording it shows the live waveform; the spoken
- * words themselves stream into the feed as a pending entry (see CaptureFeed). */
+ * words themselves stream into the feed as a pending entry (see Conversation). */
 export function Composer({ capture }: { capture: SpeechCapture }) {
   const { supported, recording, error, analyser, toggle, submitTyped } = capture;
 

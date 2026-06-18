@@ -82,7 +82,10 @@ function fromBash(cmd: string): Action | null {
   return null;
 }
 
-function humanize(t: ToolCall): Action | null {
+/** Humanize a single tool call into a Vault action (or null if it isn't a
+ * meaningful Note action). Exported so the feed can render actions inline, in the
+ * order the agent took them. */
+export function humanizeTool(t: ToolCall): Action | null {
   switch (t.tool) {
     case "Write":
       return { kind: "create", verb: "Created", label: noteName(t.target) };
@@ -107,7 +110,7 @@ export function humanizeActions(tools: ToolCall[]): Action[] {
   const out: Action[] = [];
   const seen = new Set<string>();
   for (const t of tools) {
-    const a = humanize(t);
+    const a = humanizeTool(t);
     if (!a) continue;
     const key = `${a.kind}:${a.label}`;
     if (seen.has(key)) continue;

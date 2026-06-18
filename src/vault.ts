@@ -269,44 +269,39 @@ export async function commitAll(
   return git(vault, "rev-parse", "--short", "HEAD");
 }
 
-/** A short hash is valid only if it's lowercase hex — guards every helper that
- * passes a client-supplied hash to git, so a value like `--upstream` or a path
- * can never be smuggled in as a flag. (execFile already prevents shell injection;
- * this prevents arg/flag injection.) */
-export function isValidHash(hash: string): boolean {
-  return /^[0-9a-f]{4,40}$/.test(hash);
-}
-
-/** The diff a commit introduced (`git show`), for the UI's per-capture "show
- * diff" view. Returns null for an invalid/unknown hash. */
-export async function showCommit(vault: string, hash: string): Promise<string | null> {
-  if (!isValidHash(hash)) return null;
-  return git(vault, "show", "--stat", "--patch", hash).catch(() => null);
-}
-
-export type RevertResult =
-  | { status: "reverted"; commit: string }
-  | { status: "failed"; detail: string };
-
-/** Revert a capture's commit, creating a new `vaulter: revert …` commit. On a
- * conflict (a later capture touched the same lines) the revert is aborted so the
- * working tree is left clean — the caller surfaces the failure. MUST be called on
- * the serialized lane so it never races an agent turn's edits. */
-export async function revertCommit(vault: string, hash: string): Promise<RevertResult> {
-  if (!isValidHash(hash)) return { status: "failed", detail: "invalid commit" };
-  const subject = await git(vault, "log", "-1", "--pretty=format:%s", hash).catch(() => "");
-  const label = subject.replace(/^vaulter:\s*/, "").slice(0, 50) || hash;
-  try {
-    await git(vault, "revert", "--no-edit", hash);
-  } catch (err) {
-    // Leave no half-applied revert behind.
-    await git(vault, "revert", "--abort").catch(() => {});
-    const detail = err instanceof Error ? err.message.split("\n")[0] : "revert failed";
-    return { status: "failed", detail };
+/** A short, deterministic description of the notes a turn changed, for the commit
+ * subject — e.g. "Rosetta Stone, British Museum +3". Reads the working-tree status
+ * (untracked notes included) so the message reflects the real files written, not
+ * the agent's prose. Returns "" when nothing changed. */
+export async function summarizeChanges(vault: string): Promise<string> {
+  const status = await git(vault, "status", "--porcelain", "--untracked-files=all").catch(() => "");
+  if (!status) return "";
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const line of status.split("\n")) {
+    if (!line.trim()) continue;
+    // Porcelain line: "<status> path" where status is 1–2 chars then a space
+    // (rename shows "old -> new"; quoted if it has spaces). Strip the status
+    // prefix tolerantly so a staged (2-char) vs unstaged (3-char) form both work.
+    let p = line.replace(/^.{1,2}\s/, "").trim();
+    if (p.includes(" -> ")) p = p.split(" -> ")[1];
+    p = p.replace(/^"|"$/g, "");
+    if (!p.endsWith(".md")) continue;
+    const name = (p.split("/").pop() || p).replace(/\.md$/, "");
+    if (name === "README" || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
   }
-  // git revert already committed; relabel it with our convention so it shows up
-  // in the feed and history like any other Vaulter commit.
-  await git(vault, "commit", "--amend", "-q", "-m", `vaulter: revert ${label}`).catch(() => {});
-  const commit = await git(vault, "rev-parse", "--short", "HEAD");
-  return { status: "reverted", commit };
+  if (!names.length) return "";
+  // Show real topical notes before the hub/daily log.
+  names.sort((a, b) => changeRank(a) - changeRank(b));
+  const shown = names.slice(0, 3);
+  const extra = names.length - shown.length;
+  return shown.join(", ") + (extra > 0 ? ` +${extra}` : "");
+}
+
+function changeRank(name: string): number {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(name)) return 3; // daily log
+  if (name === "Home") return 2; // hub
+  return 1; // a topical note
 }

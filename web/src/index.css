@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Generate the utility classes Streamdown emits for rendered markdown
+   (the AI-SDK <Response> renderer), so streamed summaries are styled. */
+@source "../../node_modules/streamdown/dist/index.js";
+
 /* Vaulter is a dark-only, voice-first surface. Tokens follow the shadcn naming
    convention so the hand-authored ui/* components read like generated ones. */
 :root {

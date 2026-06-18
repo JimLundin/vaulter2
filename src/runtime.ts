@@ -2,37 +2,14 @@ import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  startSession,
-  MODEL,
-  DISCOVERY_PRIMER,
-  type AgentEvent,
-  type Session,
-} from "./agent.js";
-import { commitAll, pushToRemote, showCommit, revertCommit, isValidHash } from "./vault.js";
-import {
-  persistSidecar,
-  removeSidecar,
-  loadSidecars,
-  stampOf,
-  nextStamp,
-} from "./pending.js";
-import type { FeedEvent, SyncState } from "./feed.js";
+import { streamText, convertToModelMessages, type UIMessage } from "ai";
+import { buildModel } from "./agent.js";
+import { commitAll, pushToRemote, summarizeChanges } from "./vault.js";
 
-/** A capture waiting (or re-queued) for the serialized session. `attempts` is
- * the number of times its filing turn has already FAILED; `sidecar` is the path
- * to its on-disk transcript once persisted (null while it's only in memory). */
-type QueueItem = {
-  id: number;
-  transcript: string;
-  newRecording: boolean;
-  attempts: number;
-  sidecar: string | null;
-};
-
-/** A failed capture is re-queued up to this many times; the third failure
- * escalates it to a real `inbox/` Note instead of looping forever (ADR-0004). */
-const MAX_RETRIES = 2;
+/** A single chat filing turn may not run longer than this before it's aborted, so
+ * a hung turn (a wedged web fetch, a runaway loop) can't hold a request open
+ * forever (issue #1). */
+const CHAT_TURN_TIMEOUT_MS = 180_000;
 
 // The browser UI is a Vite bundle built into public/ (index.html + hashed
 // assets under public/assets/). The Runtime serves it as static files.
@@ -52,273 +29,27 @@ const CONTENT_TYPES: Record<string, string> = {
   ".map": "application/json",
 };
 
+/**
+ * The Runtime: a tiny local HTTP server that serves the UI and exposes one
+ * endpoint, `POST /api/chat`. The browser's `useChat` posts the running capture
+ * conversation; we run ONE agent filing turn over it and stream the result back
+ * as an AI-SDK UI-message stream. Captures are serialized by the browser's queue
+ * (one turn in flight at a time), so turns never race over the Vault — and we
+ * commit the Vault after each turn, which is the git-as-undo history.
+ */
 export function createRuntime(vault: string) {
-  const clients = new Set<http.ServerResponse>();
+  // The model the chat endpoint files with. Built once and reused across requests.
+  const chatModel = buildModel(vault);
 
-  function broadcast(event: FeedEvent): void {
-    const frame = `data: ${JSON.stringify(event)}\n\n`;
-    for (const res of clients) res.write(frame);
-  }
-
-  // One long-lived Vaulter session for the whole server: the Vault is discovered
-  // once (a warm-up turn primed at launch), then every Capture reuses that
-  // context. Captures queue here and are fed to the agent ONE turn at a time;
-  // the next turn is released only after the previous one is committed, so the
-  // git commit never races the agent's edits. A turn that FAILS is not dropped:
-  // its transcript is persisted to a sidecar and re-queued onto this same lane
-  // (see `fail`), so no Capture is ever lost.
-  const pending: QueueItem[] = [];
-  // Commit hashes the UI asked to revert. They ride the SAME serialized lane as
-  // captures (drained by pump while `busy` is held) so a git revert never races
-  // an agent turn's edits — the core no-concurrent-writers invariant.
-  const reverts: string[] = [];
-  let nextId = 1;
-  let session: Session | null = null;
-  let ready = false; // discovery warm-up finished
-  let busy = false; // a turn (or its failure handling) is in flight
-  let processing: QueueItem | null = null; // item being filed; null = warm-up
-  let recovered = false; // leftover sidecars loaded back in (once, post-warm-up)
-  let lastRecordingId: string | null = null;
-
-  function pump(): void {
-    if (busy) return;
-    // Reverts take the lane first and don't need the agent session (pure git), so
-    // they can run even while a dead session waits to be reopened.
-    if (reverts.length) {
-      const hash = reverts.shift()!;
-      busy = true;
-      void doRevert(hash).finally(() => {
-        busy = false;
-        pump();
-      });
-      return;
-    }
-    if (!session) return;
-    const head = pending.shift();
-    if (!head) return;
-    busy = true;
-    processing = head;
-    broadcast({ type: "start", id: head.id });
-    // A fresh recording may be an unrelated topic; tell the agent so it doesn't
-    // blindly extend the previous recording's notes.
-    const message = head.newRecording
-      ? `(New recording — this may be a new, unrelated topic; judge from the content whether it continues earlier notes or starts something new.)\n\n${head.transcript}`
-      : head.transcript;
-    session.send(message);
-  }
-
-  /** Revert one capture's commit on the serialized lane, then push, broadcasting
-   * the outcome. Held under `busy` by pump, so no agent turn or other git op runs
-   * meanwhile. */
-  async function doRevert(hash: string): Promise<void> {
-    const r = await revertCommit(vault, hash);
-    if (r.status === "failed") {
-      broadcast({ type: "reverted", of: hash, commit: null, sync: "local", error: r.detail });
-      return;
-    }
-    let sync: SyncState = "local";
-    let syncDetail: string | undefined;
-    const push = await pushToRemote(vault);
-    if (push.status === "pushed") sync = "synced";
-    else if (push.status === "failed") {
-      sync = "failed";
-      syncDetail = push.detail;
-    }
-    broadcast({ type: "reverted", of: hash, commit: r.commit, sync, syncDetail });
-  }
-
-  /** Commit the Vault and (if a remote is set) push it, surfacing the result as
-   * the `done` event's commit/sync fields. Shared by the success and the
-   * terminal-fallback paths so both commit identically. */
-  async function commitAndPush(
-    message: string,
-  ): Promise<{ commit: string | null; sync: SyncState; syncDetail?: string }> {
-    const commit = await commitAll(vault, message.slice(0, 72));
-    let sync: SyncState = "local";
-    let syncDetail: string | undefined;
-    if (commit) {
-      const r = await pushToRemote(vault);
-      if (r.status === "pushed") sync = "synced";
-      else if (r.status === "failed") {
-        sync = "failed";
-        syncDetail = r.detail;
-      }
-    }
-    return { commit, sync, syncDetail };
-  }
-
-  /** Handle a failed filing turn: persist the transcript (so a crash can't lose
-   * it), then either re-queue it for another attempt or — once retries are
-   * exhausted — escalate it to the inbox. Runs while `busy` is still held, so no
-   * other turn or git commit races this one. */
-  async function fail(item: QueueItem, message: string): Promise<void> {
-    if (!item.sidecar) {
-      try {
-        item.sidecar = await persistSidecar(vault, item.transcript);
-      } catch {
-        /* couldn't persist (e.g. disk error) — still retry/escalate in memory */
-      }
-    }
-    item.attempts += 1;
-    if (item.attempts > MAX_RETRIES) {
-      await escalate(item, message);
-    } else {
-      broadcast({ type: "retry", id: item.id, attempts: item.attempts, message });
-      pending.push(item); // back onto the same FIFO; retried against a live session
-    }
-  }
-
-  /** Terminal fallback: a capture the agent could not file even after retries is
-   * written into the Vault as a plain Note, committed, and pushed — the only
-   * off-machine-durable copy — then its sidecar is removed. */
-  async function escalate(item: QueueItem, message: string): Promise<void> {
-    const stamp = item.sidecar ? stampOf(item.sidecar) : nextStamp();
-    const rel = path.posix.join("inbox", `unfiled-${stamp}.md`);
-    try {
-      await fs.mkdir(path.join(vault, "inbox"), { recursive: true });
-      await fs.writeFile(path.join(vault, rel), unfiledNote(item, message, stamp), "utf8");
-    } catch (err) {
-      broadcast({
-        type: "error",
-        id: item.id,
-        message: `couldn't save unfiled capture: ${err instanceof Error ? err.message : err}`,
-      });
-      return;
-    }
-    const { commit, sync, syncDetail } = await commitAndPush(`vaulter: unfiled capture ${stamp}`);
-    if (item.sidecar) await removeSidecar(item.sidecar);
-    broadcast({
-      type: "done",
-      id: item.id,
-      summary: `Couldn't file after ${item.attempts} attempts — saved raw capture to ${rel}`,
-      commit,
-      sync,
-      syncDetail,
-    });
-  }
-
-  /** Load any sidecars a crashed run left behind back onto the queue. Runs once,
-   * after the discovery warm-up, so recovered captures are filed against an
-   * oriented session (and never duplicated on a later re-open). */
-  async function recover(): Promise<void> {
-    if (recovered) return;
-    recovered = true;
-    let items: { sidecar: string; transcript: string }[] = [];
-    try {
-      items = await loadSidecars(vault);
-    } catch {
-      return;
-    }
-    for (const it of items) {
-      const id = nextId++;
-      // A recovered capture stands alone — treat it as a new recording, and give
-      // it a fresh retry budget.
-      pending.push({ id, transcript: it.transcript, newRecording: true, attempts: 0, sidecar: it.sidecar });
-      broadcast({ type: "queued", id, transcript: it.transcript });
-    }
-  }
-
-  /** The discovery warm-up has finished (success or not): open for captures,
-   * recover any leftover sidecars, then start draining. */
-  async function afterWarmup(): Promise<void> {
-    ready = true;
-    broadcast({ type: "ready" });
-    busy = false;
-    processing = null;
-    await recover();
-    pump();
-  }
-
-  function ensureSession(): void {
-    if (session) return;
-    ready = false;
-    session = startSession(vault, {
-      onEvent: (e: AgentEvent) => {
-        if (!processing) return; // warm-up turn: nothing to show
-        broadcast(
-          e.kind === "text"
-            ? { type: "text", id: processing.id, text: e.text }
-            : { type: "tool", id: processing.id, tool: e.tool, target: e.target },
-        );
-      },
-      onTurnComplete: async (summary: string) => {
-        if (!processing) {
-          // Warm-up finished: ready for real captures (don't commit orientation).
-          await afterWarmup();
-          return;
-        }
-        const item = processing;
-        const { commit, sync, syncDetail } = await commitAndPush(
-          `vaulter: ${summary || "capture"}`,
-        );
-        // Filed successfully — a re-queued/recovered item no longer needs its sidecar.
-        if (item.sidecar) await removeSidecar(item.sidecar);
-        broadcast({ type: "done", id: item.id, summary, commit, sync, syncDetail });
-        busy = false;
-        processing = null;
-        pump();
-      },
-      onTurnError: (message: string) => {
-        if (!processing) {
-          // Warm-up failed — proceed anyway; captures will discover as needed.
-          void afterWarmup();
-          return;
-        }
-        const item = processing;
-        // Hold `busy` through failure handling (it may commit) so nothing else
-        // touches the Vault/git meanwhile; release and pump once it settles.
-        void fail(item, message).finally(() => {
-          busy = false;
-          processing = null;
-          pump();
-        });
-      },
-      onFatal: (message: string) => {
-        const item = processing;
-        if (!item) {
-          // Warm-up (or an idle session) died — e.g. no `claude` login. Drop the
-          // dead session; the NEXT capture reopens it (lazy, so a persistently
-          // failing warm-up can't spin-loop spawning processes). Mark ready so the
-          // UI stops showing "learning your vault…" and accepts captures, which
-          // surface the real error per-capture if the SDK still can't run.
-          session = null;
-          busy = false;
-          processing = null;
-          if (!ready) {
-            ready = true;
-            broadcast({ type: "ready" });
-          }
-          return;
-        }
-        // Re-queue/escalate the in-flight item (which emits its own retry/done),
-        // holding the session (busy) until it settles so no reopened session
-        // commits over this work. A context overflow retries against the fresh
-        // session the next capture opens.
-        void fail(item, message).finally(() => {
-          session = null;
-          ready = false;
-          busy = false;
-          processing = null;
-          // No pump: the session is dead; the next capture lazily reopens it.
-        });
-      },
-    });
-    // Pay discovery up front, at launch, instead of on the first chunk.
-    busy = true;
-    processing = null;
-    session.send(DISCOVERY_PRIMER);
-  }
-
-  function capture(rid: string, transcript: string): void {
-    ensureSession();
-    if (transcript) {
-      const newRecording = rid !== lastRecordingId;
-      lastRecordingId = rid;
-      const id = nextId++;
-      pending.push({ id, transcript, newRecording, attempts: 0, sidecar: null });
-      broadcast({ type: "queued", id, transcript });
-    }
-    pump();
+  /** Commit whatever the just-finished turn wrote, and push if a remote is set.
+   * The subject is derived from the changed note files (deterministic), not the
+   * agent's prose. Best-effort: a failure just leaves the change for the next
+   * commit to sweep up. Safe to run per-turn — the browser sends one at a time. */
+  async function commitVault(): Promise<void> {
+    const changes = await summarizeChanges(vault).catch(() => "");
+    if (!changes) return; // nothing was written
+    const commit = await commitAll(vault, `vaulter: ${changes}`.slice(0, 72)).catch(() => null);
+    if (commit) await pushToRemote(vault).catch(() => {});
   }
 
   const server = http.createServer(async (req, res) => {
@@ -345,91 +76,37 @@ export function createRuntime(vault: string) {
       return;
     }
 
-    if (req.method === "GET" && url === "/events") {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-      res.write(": connected\n\n");
-      res.write(`data: ${JSON.stringify({ type: "info", model: MODEL, ready })}\n\n`);
-      clients.add(res);
-      // Heartbeat: a comment frame keeps the connection alive through any
-      // intermediary idle timeout and surfaces a half-open socket so it gets
-      // cleaned up. EventSource ignores comment frames.
-      const ping = setInterval(() => {
-        if (!res.writableEnded) res.write(": ping\n\n");
-      }, 25_000);
-      req.on("close", () => {
-        clearInterval(ping);
-        clients.delete(res);
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url === "/capture") {
+    // The AI-SDK chat surface. Run one filing turn over the posted conversation,
+    // stream it back, and commit the Vault when it finishes.
+    if (req.method === "POST" && url === "/api/chat") {
       let body = "";
       req.on("data", (c) => {
         body += c;
-        if (body.length > 1_000_000) req.destroy(); // guard
+        if (body.length > 5_000_000) req.destroy();
       });
-      req.on("end", () => {
-        let rid = "";
-        let transcript = "";
+      req.on("end", async () => {
+        let messages: UIMessage[];
         try {
-          const j = JSON.parse(body);
-          rid = (j.recordingId ?? "").toString();
-          transcript = (j.transcript ?? "").toString().trim();
+          messages = JSON.parse(body).messages;
+          if (!Array.isArray(messages)) throw new Error("not an array");
         } catch {
-          /* fall through to 400 */
-        }
-        if (!rid) {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "need recordingId" }));
+          res.end(JSON.stringify({ error: "need messages" }));
           return;
         }
-        capture(rid, transcript);
-        res.writeHead(202, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ queued: pending.length }));
-      });
-      return;
-    }
-
-    // The diff a capture's commit introduced (per-capture "show diff").
-    if (req.method === "GET" && url.startsWith("/commit/")) {
-      const m = url.match(/^\/commit\/([0-9a-f]{4,40})\/diff$/);
-      if (m) {
-        const diff = await showCommit(vault, m[1]);
-        res.writeHead(diff == null ? 404 : 200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(diff == null ? { error: "unknown commit" } : { diff }));
-        return;
-      }
-    }
-
-    // Revert a capture's commit. Queued onto the serialized lane (see `reverts`),
-    // so the git revert never races an in-flight agent turn.
-    if (req.method === "POST" && url === "/revert") {
-      let body = "";
-      req.on("data", (c) => {
-        body += c;
-        if (body.length > 10_000) req.destroy();
-      });
-      req.on("end", () => {
-        let commit = "";
-        try {
-          commit = (JSON.parse(body).commit ?? "").toString();
-        } catch {
-          /* fall through to 400 */
-        }
-        if (!isValidHash(commit)) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "need a valid commit" }));
-          return;
-        }
-        reverts.push(commit);
-        pump();
-        res.writeHead(202, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ queued: reverts.length }));
+        const ac = new AbortController();
+        const watchdog = setTimeout(() => ac.abort(), CHAT_TURN_TIMEOUT_MS);
+        const result = streamText({
+          model: chatModel,
+          messages: await convertToModelMessages(messages),
+          abortSignal: ac.signal,
+          onFinish: async () => {
+            clearTimeout(watchdog);
+            await commitVault();
+          },
+          onError: () => clearTimeout(watchdog),
+        });
+        result.pipeUIMessageStreamToResponse(res);
       });
       return;
     }
@@ -458,25 +135,5 @@ export function createRuntime(vault: string) {
     res.writeHead(404).end("not found");
   });
 
-  // Warm the session as soon as the runtime is created, so discovery is done
-  // (or nearly) by the time the user records their first Capture.
-  ensureSession();
-
   return server;
-}
-
-/** The body of a terminal `inbox/unfiled-*.md` Note: a real, committed Note that
- * preserves a capture Vaulter could not file, so even unfilable input lands in
- * the Vault. */
-function unfiledNote(item: QueueItem, message: string, stamp: string): string {
-  return [
-    `# Unfiled capture ${stamp}`,
-    "",
-    `> Vaulter could not file this capture automatically after ${item.attempts} attempts`,
-    `> (last error: ${message}). The raw transcript is preserved below so nothing is`,
-    "> lost — file it into the wiki by hand, or a later capture may pick it up.",
-    "",
-    item.transcript,
-    "",
-  ].join("\n");
 }

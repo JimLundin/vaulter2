@@ -1,17 +1,22 @@
 import { Header } from "@/components/Header";
 import { Composer } from "@/components/Composer";
-import { CaptureFeed } from "@/components/CaptureFeed";
-import { useFeed } from "@/hooks/useFeed";
+import { Conversation } from "@/components/Conversation";
+import { useFilingQueue } from "@/hooks/useFilingQueue";
 import { useSpeechCapture } from "@/hooks/useSpeechCapture";
 
 export default function App() {
-  const { captures, model, ready, connected } = useFeed();
-  const capture = useSpeechCapture();
+  const { messages, status, error, enqueue, queued } = useFilingQueue();
+  const capture = useSpeechCapture(enqueue);
 
   return (
     <div className="flex h-full flex-col">
-      <Header model={model} ready={ready} connected={connected} />
-      <CaptureFeed captures={captures} interim={capture.recording ? capture.interim : ""} />
+      <Header status={status} error={error} />
+      <Conversation
+        messages={messages}
+        status={status}
+        queued={queued}
+        interim={capture.recording ? capture.interim : ""}
+      />
       <Composer capture={capture} />
     </div>
   );

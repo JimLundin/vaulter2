@@ -1,22 +1,15 @@
-import { Vault } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { Loader2, Vault } from "lucide-react";
+import type { ChatStatus } from "ai";
 
-/** Slim top bar: identity, connection/warm-up state, and the active model.
- * Distinguishes "not connected to the Runtime" from "connected but still
- * learning the vault" so the UI never sits silently on the wrong status. */
-export function Header({
-  model,
-  ready,
-  connected,
-}: {
-  model: string | null;
-  ready: boolean;
-  connected: boolean;
-}) {
-  const status = !connected
-    ? { text: "· connecting to runtime…", className: "text-muted-foreground" }
-    : !ready
-      ? { text: "· learning your vault…", className: "text-primary animate-pulse-soft" }
+/** Slim top bar: identity plus the current filing status, derived from useChat.
+ * The waiting queue is shown in the feed itself, so this just reflects idle /
+ * filing / error. */
+export function Header({ status, error }: { status: ChatStatus; error?: Error }) {
+  const filing = status === "submitted" || status === "streaming";
+  const note = error
+    ? { text: "· filing error", cls: "text-record" }
+    : filing
+      ? { text: "· filing…", cls: "text-primary animate-pulse-soft" }
       : null;
 
   return (
@@ -26,11 +19,11 @@ export function Header({
       <span className="hidden text-[13px] text-muted-foreground sm:inline">
         speak — Vaulter files it as you go
       </span>
-      {status && <span className={`text-[13px] ${status.className}`}>{status.text}</span>}
-      {model && (
-        <Badge variant="muted" className="ml-auto font-mono text-[11px]">
-          {model}
-        </Badge>
+      {note && (
+        <span className={`inline-flex items-center gap-1 text-[13px] ${note.cls}`}>
+          {filing && <Loader2 className="size-3 animate-spin" />}
+          {note.text}
+        </span>
       )}
     </header>
   );

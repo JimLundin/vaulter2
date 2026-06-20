@@ -4,6 +4,7 @@ import {
   ArrowRightLeft,
   BookOpen,
   Brain,
+  ChevronRight,
   Copy,
   FilePlus2,
   Loader2,
@@ -16,7 +17,7 @@ import {
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Response } from "@/components/ai-elements/Response";
-import { humanizeTool, type Action, type ActionKind } from "@/lib/actions";
+import { humanizeTool, type Action, type ActionKind, type DiffLine } from "@/lib/actions";
 import type { ToolCall } from "@/lib/types";
 
 const ACTION_ICON: Record<ActionKind, typeof BookOpen> = {
@@ -50,13 +51,15 @@ function toolCallOf(p: Part): ToolCall {
   const any = p as { toolName?: string; type: string; input?: Record<string, unknown> };
   const tool = any.toolName ?? (any.type.startsWith("tool-") ? any.type.slice(5) : "tool");
   const input = any.input ?? {};
-  const target =
-    (input.file_path as string) ??
-    (input.path as string) ??
-    (input.pattern as string) ??
-    (input.command as string) ??
-    "";
-  return { tool, target: typeof target === "string" ? target : "" };
+  const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+  const target = str(input.file_path) ?? str(input.path) ?? str(input.pattern) ?? str(input.command) ?? "";
+  return {
+    tool,
+    target,
+    oldString: str(input.old_string),
+    newString: str(input.new_string),
+    content: str(input.content),
+  };
 }
 
 function textOf(parts: Part[]): string {
@@ -66,14 +69,48 @@ function textOf(parts: Part[]): string {
     .join("");
 }
 
+function DiffView({ lines }: { lines: DiffLine[] }) {
+  return (
+    <pre className="mt-1.5 overflow-x-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed">
+      {lines.map((l, i) => (
+        <div
+          key={i}
+          className={
+            l.sign === "+"
+              ? "text-success"
+              : l.sign === "-"
+                ? "text-record"
+                : "text-muted-foreground"
+          }
+        >
+          <span className="select-none opacity-50">{l.sign === " " ? " " : l.sign}</span>{" "}
+          {l.text || " "}
+        </div>
+      ))}
+    </pre>
+  );
+}
+
 function ActionRow({ action }: { action: Action }) {
   const Icon = ACTION_ICON[action.kind];
-  return (
-    <div className="flex items-center gap-1.5 text-[13px]">
+  const row = (
+    <>
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className={VERB_CLASS[action.kind]}>{action.verb}</span>
       <span className="truncate text-foreground/90">{action.label}</span>
-    </div>
+    </>
+  );
+  if (!action.diff?.length) {
+    return <div className="flex items-center gap-1.5 text-[13px]">{row}</div>;
+  }
+  return (
+    <details className="group text-[13px]">
+      <summary className="flex cursor-pointer select-none list-none items-center gap-1.5">
+        {row}
+        <ChevronRight className="size-3 text-muted-foreground transition-transform group-open:rotate-90" />
+      </summary>
+      <DiffView lines={action.diff} />
+    </details>
   );
 }
 

@@ -14,7 +14,49 @@ export type ActionKind =
   | "copy"
   | "search";
 
-export type Action = { kind: ActionKind; verb: string; label: string };
+/** One line of a rendered diff: a sign (context/removed/added) and its text. */
+export type DiffLine = { sign: " " | "+" | "-"; text: string };
+
+export type Action = { kind: ActionKind; verb: string; label: string; diff?: DiffLine[] };
+
+/** Keep an expanded diff from blowing up the feed on a large Write. */
+const MAX_DIFF_LINES = 160;
+
+/** Split into lines, dropping one trailing newline so a file that ends in "\n"
+ * doesn't render a phantom blank final line. */
+function splitLines(s: string): string[] {
+  return s.replace(/\n$/, "").split("\n");
+}
+
+function capDiff(lines: DiffLine[]): DiffLine[] {
+  if (lines.length <= MAX_DIFF_LINES) return lines;
+  return [
+    ...lines.slice(0, MAX_DIFF_LINES),
+    { sign: " ", text: `… ${lines.length - MAX_DIFF_LINES} more lines` },
+  ];
+}
+
+/** A small, dependency-free line diff: keep the common leading and trailing
+ * lines as context and show the changed middle as removed-then-added. Good
+ * enough for the snippet-sized old_string/new_string an Edit carries. */
+function lineDiff(oldText: string, newText: string): DiffLine[] {
+  const a = splitLines(oldText);
+  const b = splitLines(newText);
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  const lines: DiffLine[] = [];
+  for (let i = 0; i < start; i++) lines.push({ sign: " ", text: a[i] });
+  for (let i = start; i < endA; i++) lines.push({ sign: "-", text: a[i] });
+  for (let i = start; i < endB; i++) lines.push({ sign: "+", text: b[i] });
+  for (let i = endA; i < a.length; i++) lines.push({ sign: " ", text: a[i] });
+  return lines;
+}
 
 /** A vault path → the Note's display name (basename, no folders, no .md). */
 function noteName(p: string): string {
@@ -88,10 +130,26 @@ function fromBash(cmd: string): Action | null {
 export function humanizeTool(t: ToolCall): Action | null {
   switch (t.tool) {
     case "Write":
-      return { kind: "create", verb: "Created", label: noteName(t.target) };
+      return {
+        kind: "create",
+        verb: "Created",
+        label: noteName(t.target),
+        diff:
+          t.content != null
+            ? capDiff(splitLines(t.content).map((text) => ({ sign: "+", text })))
+            : undefined,
+      };
     case "Edit":
     case "MultiEdit":
-      return { kind: "update", verb: "Updated", label: noteName(t.target) };
+      return {
+        kind: "update",
+        verb: "Updated",
+        label: noteName(t.target),
+        diff:
+          t.oldString != null && t.newString != null
+            ? capDiff(lineDiff(t.oldString, t.newString))
+            : undefined,
+      };
     case "Read":
       return { kind: "read", verb: "Read", label: noteName(t.target) };
     case "Glob":

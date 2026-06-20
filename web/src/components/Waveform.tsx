@@ -62,6 +62,10 @@ export function Waveform({ analyser, className }: { analyser: AnalyserNode | nul
       const mid = height / 2;
       const gap = 3;
       const barW = (width - gap * (BARS - 1)) / BARS;
+      // Before the canvas is laid out (or while hidden) its width is ~0, which
+      // makes barW negative — and a negative roundRect radius throws
+      // IndexSizeError. Skip the frame; the next rAF retries once sized.
+      if (barW <= 0) return;
       for (let i = 0; i < BARS; i++) {
         heights[i] += (targets[i] - heights[i]) * 0.35; // ease toward target
         const h = Math.max(2, heights[i] * (height - 6));

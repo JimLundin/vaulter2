@@ -48,20 +48,17 @@ async function main() {
   const server = createRuntime(vault);
 
   server.listen(port, "127.0.0.1", () => {
-    const urlStr = `http://localhost:${port}`;
-    // In `npm run dev`, Vite serves the live UI (with HMR) and proxies the API
-    // here — so the Runtime's own port serves only the last-built bundle. The
-    // dev script passes Vite's URL so we point the developer there, not at the
-    // stale bundle. (No VAULTER_DEV_URL in production: the Runtime serves the UI.)
-    const devUrl = process.env.VAULTER_DEV_URL;
-    if (devUrl) {
-      console.log(`Runtime (API) on ${urlStr} — open ${devUrl} for the dev UI (HMR).`);
-    } else {
-      console.log(`Vaulter is running at ${urlStr}`);
-    }
+    // One canonical URL to report and open. In `npm run dev`, Vite serves the UI
+    // (with HMR) on its own port and proxies /api back here, so the whole app is
+    // a single origin — the dev script passes that URL via VAULTER_DEV_URL and we
+    // point the developer at it (the Runtime's own port would serve only the
+    // last-built bundle). In production there is no VAULTER_DEV_URL: the Runtime
+    // serves the UI itself, so the URL is its own port.
+    const url = process.env.VAULTER_DEV_URL ?? `http://localhost:${port}`;
+    console.log(`Vaulter is running at ${url}`);
     console.log("Using your on-disk `claude` subscription login (no API key).");
     console.log("Press Ctrl+C to stop.");
-    if (!process.env.VAULTER_NO_OPEN) openBrowser(urlStr);
+    if (!process.env.VAULTER_NO_OPEN) openBrowser(url);
   });
 
   server.on("error", (err: NodeJS.ErrnoException) => {
